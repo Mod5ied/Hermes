@@ -165,6 +165,7 @@ func run() {
 			tray.Clear()
 			ovl.SetTrayCount(0)
 			ovl.SetInstruction("", false)
+			transcriber.Reset()
 		}()
 	}
 
@@ -191,6 +192,14 @@ func run() {
 
 	ovl.OnCapture(doCapture)
 	ovl.OnSend(doSend)
+	ovl.OnNewSession(func() {
+		thread.Clear()
+		answerBuffer = ""
+		tray.Clear()
+		ovl.SetTrayCount(0)
+		ovl.SetInstruction("", false)
+		transcriber.Reset()
+	})
 	ovl.OnListenToggle(func(on bool) {
 		listening = on
 		doListenToggle(on)

@@ -9,6 +9,7 @@ package speech
 
 int hermes_speech_start(const char *locale);
 void hermes_speech_stop(void);
+void hermes_speech_reset(void);
 int hermes_speech_analyzer_is_available(void);
 */
 import "C"
@@ -28,6 +29,7 @@ type Result struct {
 type Transcriber interface {
 	Start(onResult func(Result)) error
 	Stop() error
+	Reset() error
 }
 
 // New creates a transcriber for the given locale (empty uses system locale).
@@ -77,6 +79,12 @@ func (t *nativeTranscriber) Stop() error {
 		callbacks.Delete(key)
 		return true
 	})
+	return nil
+}
+
+// Reset clears any accumulated transcript state.
+func (t *nativeTranscriber) Reset() error {
+	C.hermes_speech_reset()
 	return nil
 }
 

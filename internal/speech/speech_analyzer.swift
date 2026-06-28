@@ -14,6 +14,33 @@ private var gCallback: HermesSpeechCallback?
 private var gTargetFormat: AVAudioFormat?
 private var gConverter: AVAudioConverter?
 private var gConverterSrc: AVAudioFormat?
+private let gAccumulator = SpeechAccumulator()
+
+private actor SpeechAccumulator {
+    private var finalized = AttributedString()
+    private var volatile = AttributedString()
+    private var lastFinalEnd = CMTime.zero
+
+    func reset() {
+        finalized = AttributedString()
+        volatile = AttributedString()
+        lastFinalEnd = .zero
+    }
+
+    func accumulate(_ result: SpeechTranscriber.Result) -> (text: String, isFinal: Bool) {
+        let isFinal = CMTimeCompare(result.range.end, result.resultsFinalizationTime) <= 0
+        if isFinal {
+            if CMTimeCompare(result.range.end, lastFinalEnd) > 0 {
+                finalized += result.text
+                lastFinalEnd = result.range.end
+            }
+            volatile = AttributedString()
+        } else {
+            volatile = result.text
+        }
+        return (String((finalized + volatile).characters), isFinal)
+    }
+}
 
 private func converterTo(_ dst: AVAudioFormat, from src: AVAudioFormat) -> AVAudioConverter? {
     if let c = gConverter, gConverterSrc == src { return c }
@@ -116,6 +143,8 @@ public func hermes_speech_analyzer_start(_ localeCStr: UnsafePointer<CChar>?, _ 
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     gAnalyzer = analyzer
 
+    Task { await gAccumulator.reset() }
+
     gAnalyzerTask = Task {
         do {
             try await analyzer.prepareToAnalyze(in: format)
@@ -128,9 +157,8 @@ public func hermes_speech_analyzer_start(_ localeCStr: UnsafePointer<CChar>?, _ 
     gResultTask = Task {
         do {
             for try await result in transcriber.results {
-                let text = String(result.text.characters)
-                let isFinal = CMTimeCompare(result.range.end, result.resultsFinalizationTime) <= 0
-                notify(text: text, final: isFinal)
+                let (combined, isFinal) = await gAccumulator.accumulate(result)
+                notify(text: combined, final: isFinal)
             }
         } catch {
             logEngine("result error: \(error.localizedDescription)")
@@ -187,6 +215,11 @@ public func hermes_speech_analyzer_feed_buffer(
     return 0
 }
 
+@_cdecl("hermes_speech_analyzer_reset")
+public func hermes_speech_analyzer_reset() {
+    Task { await gAccumulator.reset() }
+}
+
 @_cdecl("hermes_speech_analyzer_stop")
 public func hermes_speech_analyzer_stop() {
     guard #available(macOS 26.0, *) else { return }
@@ -211,6 +244,7 @@ public func hermes_speech_analyzer_stop() {
     gTargetFormat = nil
     gConverter = nil
     gConverterSrc = nil
+    Task { await gAccumulator.reset() }
 }
 
 private func notify(text: String, final: Bool) {

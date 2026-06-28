@@ -12,6 +12,7 @@ extern int hermes_speech_analyzer_locale_supported(const char *locale);
 extern int hermes_speech_analyzer_start(const char *locale, void (*callback)(char *text, int final));
 extern int hermes_speech_analyzer_feed_buffer(const float *data, int32_t frameCount, double sampleRate, uint32_t channels);
 extern void hermes_speech_analyzer_stop(void);
+extern void hermes_speech_analyzer_reset(void);
 
 @interface HermesSpeechOutput : NSObject <SCStreamOutput>
 @property (nonatomic, strong) SFSpeechAudioBufferRecognitionRequest *fallbackRequest;
@@ -205,6 +206,22 @@ int hermes_speech_start(const char *locale) {
     });
 
     return 0;
+}
+
+void hermes_speech_reset(void) {
+    if (gUsingAnalyzer) { hermes_speech_analyzer_reset(); return; }
+    if (gRecognizer) {
+        [gRequest endAudio];
+        if (gTask) { [gTask cancel]; gTask = nil; }
+        gRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
+        gRequest.requiresOnDeviceRecognition = YES;
+        gRequest.shouldReportPartialResults = YES;
+        gTask = [gRecognizer recognitionTaskWithRequest:gRequest resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
+            if (error) { hermesSpeechForward((char *)[@"" UTF8String], 1); return; }
+            if (result) { hermesSpeechForward((char *)[result.bestTranscription.formattedString UTF8String], result.isFinal ? 1 : 0); }
+        }];
+        if (gOutput) gOutput.fallbackRequest = gRequest;
+    }
 }
 
 void hermes_speech_stop(void) {
