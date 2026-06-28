@@ -15,6 +15,10 @@ const (
 	TypeAnswer   = "cmd+t"
 	ToggleListen = "cmd+l"
 	Cancel       = "esc"
+	MoveLeft     = "cmd+left"
+	MoveRight    = "cmd+right"
+	MoveUp       = "cmd+up"
+	MoveDown     = "cmd+down"
 )
 
 // Register registers a global hotkey for the given combo and calls fn when pressed.
@@ -76,6 +80,14 @@ func parseCombo(combo string) ([]hotkey.Modifier, hotkey.Key, error) {
 			key = hotkey.KeyT
 		case "l":
 			key = hotkey.KeyL
+		case "left":
+			key = hotkey.KeyLeft
+		case "right":
+			key = hotkey.KeyRight
+		case "up":
+			key = hotkey.KeyUp
+		case "down":
+			key = hotkey.KeyDown
 		default:
 			return nil, 0, fmt.Errorf("unknown combo part: %s", p)
 		}

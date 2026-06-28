@@ -13,9 +13,10 @@ import (
 func TestDefault(t *testing.T) {
 	cfg := Default()
 	assert.Equal(t, "meta-llama/llama-4-scout-17b-16e-instruct", cfg.Model)
+	assert.Equal(t, ProviderGroq, cfg.Provider)
 	assert.True(t, cfg.Stealth)
 	assert.True(t, cfg.Humanise)
-	assert.Equal(t, 25*time.Millisecond, cfg.BaseDelay)
+	assert.Equal(t, 90*time.Millisecond, cfg.BaseDelay)
 	assert.Equal(t, 12, cfg.ContextTurns)
 	assert.Equal(t, 1, cfg.ImageWindow)
 }
@@ -29,6 +30,7 @@ func TestLoadSave(t *testing.T) {
 	cfg := Default()
 	cfg.APIKey = "test-key"
 	cfg.Region = &Rect{X: 10, Y: 20, W: 100, H: 200}
+	ApplyProviderDefaults(&cfg)
 	require.NoError(t, Save(cfg))
 
 	loaded, err := Load()

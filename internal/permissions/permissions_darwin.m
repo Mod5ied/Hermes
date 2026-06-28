@@ -32,23 +32,11 @@ void requestSpeechAuthorization(void) {
 
 void hermesShowAlert(const char *msg) {
     NSString *text = [NSString stringWithUTF8String:msg];
-    void (^show)(void) = ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Hermes needs permission";
         alert.informativeText = text;
         [alert addButtonWithTitle:@"OK"];
         [alert runModal];
-    };
-
-    if ([NSThread isMainThread]) {
-        show();
-        return;
-    }
-
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        show();
-        dispatch_semaphore_signal(sem);
     });
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 }

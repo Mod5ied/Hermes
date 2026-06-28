@@ -25,14 +25,14 @@ void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
 void hermesOverlayFreeString(char *s);
 void hermesOverlayRun(void);
-void hermesOverlayShowSettings(const char *apiKey, const char *model, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
+void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
+void hermesOverlayHideSettings(void);
+void hermesOverlayMove(int dx, int dy);
 */
 import "C"
 import (
 	"time"
 	"unsafe"
-
-	"golang.design/x/mainthread"
 
 	"github.com/hermes/hermes/internal/config"
 	"github.com/hermes/hermes/internal/llm"
@@ -57,9 +57,10 @@ type Overlay interface {
 	OnListenToggle(handler func(on bool))
 	OnSettings(handler func())
 	OnTypeReady(handler func())
-	OnSettingsSaved(handler func(apiKey, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
+	OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
 	Show()
 	Hide()
+	Move(dx, dy int)
 }
 
 // CancelCountdown cancels the typing countdown.
@@ -73,12 +74,11 @@ func Run() {
 }
 
 // New creates the overlay from config.
+// Must be called on the main thread (the OS thread that will run [NSApp run]).
 func New(cfg config.Config) Overlay {
 	o := &nativeOverlay{}
 	currentOverlay = o
-	mainthread.Call(func() {
-		C.hermesOverlayInit(C.bool(cfg.Stealth))
-	})
+	C.hermesOverlayInit(C.bool(cfg.Stealth))
 	return o
 }
 
@@ -89,7 +89,7 @@ type nativeOverlay struct {
 	onListenToggle func(bool)
 	onSettings     func()
 	onTypeReady    func()
-	onSettingsSaved func(apiKey, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onSettingsSaved func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
 }
 
 func (o *nativeOverlay) BeginAnswer() {
@@ -175,7 +175,7 @@ func (o *nativeOverlay) OnTypeReady(handler func()) {
 	o.onTypeReady = handler
 }
 
-func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
+func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
 	o.onSettingsSaved = handler
 }
 
@@ -185,6 +185,14 @@ func (o *nativeOverlay) Show() {
 
 func (o *nativeOverlay) Hide() {
 	C.hermesOverlayHide()
+}
+
+func HideSettings() {
+	C.hermesOverlayHideSettings()
+}
+
+func (o *nativeOverlay) Move(dx, dy int) {
+	C.hermesOverlayMove(C.int(dx), C.int(dy))
 }
 
 // ShowSettings opens the native settings window.
@@ -198,7 +206,9 @@ func ShowSettings(cfg config.Config) {
 	defer C.free(unsafe.Pointer(cProfile))
 	defer C.free(unsafe.Pointer(cLocale))
 
-	C.hermesOverlayShowSettings(cKey, cModel, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
+	cProvider := C.CString(cfg.Provider)
+	defer C.free(unsafe.Pointer(cProvider))
+	C.hermesOverlayShowSettings(cKey, cProvider, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
 		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale)
 }
 
@@ -245,11 +255,11 @@ func hermesOverlayOnTypeReady() {
 }
 
 //export hermesOverlayOnSettingsSaved
-func hermesOverlayOnSettingsSaved(apiKey *C.char, model *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
+func hermesOverlayOnSettingsSaved(apiKey *C.char, provider *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
 	if currentOverlay != nil && currentOverlay.onSettingsSaved != nil {
 		currentOverlay.onSettingsSaved(
 			C.GoString(apiKey),
-			C.GoString(model),
+			C.GoString(provider),
 			stealth != 0,
 			humanise != 0,
 			time.Duration(delayMs)*time.Millisecond,

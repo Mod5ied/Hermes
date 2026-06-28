@@ -44,5 +44,5 @@ func TestEmptyInstructionPlaceholder(t *testing.T) {
 	th := NewThread(12, 1, llm.SystemPrompt(""))
 	msgs := th.Build(Turn{ImageDataURLs: []string{"img"}})
 	last := msgs[len(msgs)-1]
-	assert.Equal(t, "screen shown", last.Text)
+	assert.Equal(t, "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option.", last.Text)
 }

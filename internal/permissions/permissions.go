@@ -15,7 +15,6 @@ import "C"
 import (
 	"fmt"
 	"os"
-	"strings"
 	"unsafe"
 )
 
@@ -86,13 +85,14 @@ func EnsureAll() error {
 	}
 	fmt.Fprintln(os.Stderr, "The app will still start. Grant them in System Settings when prompted.")
 
-	ShowAlert("Hermes is missing the following permissions:\n\n• " +
-		strings.Join(names, "\n• ") +
-		"\n\nGrant them in System Settings > Privacy & Security, then restart Hermes.")
+	// Don't show a blocking alert here. The native APIs will prompt the user
+	// when the features are actually used, and a modal alert would stall the
+	// AppKit run loop before hotkeys can register.
+	_ = names
 	return nil
 }
 
-// ShowAlert displays a blocking native alert with msg.
+// ShowAlert displays a native alert with msg without blocking the caller.
 func ShowAlert(msg string) {
 	c := C.CString(msg)
 	defer C.free(unsafe.Pointer(c))

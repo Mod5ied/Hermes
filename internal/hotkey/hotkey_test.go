@@ -25,3 +25,18 @@ func TestParseUnknown(t *testing.T) {
 	_, _, err := parseCombo("cmd+unknown")
 	assert.Error(t, err)
 }
+
+func TestParseComboArrows(t *testing.T) {
+	cases := map[string]hotkey.Key{
+		"cmd+left":  hotkey.KeyLeft,
+		"cmd+right": hotkey.KeyRight,
+		"cmd+up":    hotkey.KeyUp,
+		"cmd+down":  hotkey.KeyDown,
+	}
+	for combo, want := range cases {
+		mods, key, err := parseCombo(combo)
+		assert.NoError(t, err, combo)
+		assert.Equal(t, want, key, combo)
+		assert.Contains(t, mods, hotkey.ModCmd, combo)
+	}
+}

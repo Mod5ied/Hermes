@@ -4,9 +4,10 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"runtime"
+	"syscall"
 	"time"
-
-	"golang.design/x/mainthread"
 
 	"github.com/hermes/hermes/internal/capture"
 	"github.com/hermes/hermes/internal/config"
@@ -22,7 +23,20 @@ import (
 )
 
 func main() {
-	mainthread.Init(run)
+	// Temporary diagnostic logging to disk because stderr is lost when the
+	// app is launched via open(1).
+	if f, err := os.OpenFile("/tmp/hermes.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+		log.SetOutput(f)
+		os.Stderr = f
+		// Also redirect C's stderr (file descriptor 2) so Objective-C logs
+		// written with fprintf(stderr, ...) end up in the same file.
+		_ = syscall.Dup2(int(f.Fd()), 2)
+	}
+
+	// Pin the main goroutine to the true OS main thread so that
+	// [NSApp run] starts AppKit's event loop on the correct thread.
+	runtime.LockOSThread()
+	run()
 }
 
 func run() {
@@ -31,7 +45,8 @@ func run() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	client := llm.NewGroq(cfg)
+	config.ApplyProviderDefaults(&cfg)
+	client := newClient(cfg)
 	thread := session.NewThreadFromConfig(cfg)
 	tracker := ratelimit.NewTracker(cfg.Model)
 	typerEngine := typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
@@ -62,20 +77,23 @@ func run() {
 
 	doCapture := func() {
 		cancelAll()
-		region := cfg.Region
-		if region == nil {
-			r, ok, err := capture.SelectRegion(capture.Rect{})
-			if err != nil {
-				log.Printf("select region: %v", err)
-				return
-			}
-			if !ok {
-				return
-			}
-			region = &config.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}
-			cfg.Region = region
-			_ = config.Save(cfg)
+		// Always let the user select the area. The previously saved region is
+		// passed as the starting seed so the last selection is pre-selected.
+		seed := capture.Rect{}
+		if cfg.Region != nil {
+			seed = capture.Rect{X: cfg.Region.X, Y: cfg.Region.Y, W: cfg.Region.W, H: cfg.Region.H}
 		}
+		r, ok, err := capture.SelectRegion(seed)
+		if err != nil {
+			log.Printf("select region: %v", err)
+			return
+		}
+		if !ok {
+			return
+		}
+		region := &config.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}
+		cfg.Region = region
+		_ = config.Save(cfg)
 
 		img, err := capture.CaptureImage(capture.Rect{X: region.X, Y: region.Y, W: region.W, H: region.H})
 		if err != nil {
@@ -123,26 +141,31 @@ func run() {
 		ovl.SetBusy(true)
 		ovl.BeginAnswer()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
+		// Run the network call off the main thread so the AppKit run loop
+		// is not blocked while streaming. Overlay mutators marshal to the
+		// main queue internally, so AppendAnswer and the final calls are safe.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
 
-		answer, snap, err := client.Solve(ctx, msgs, ovl.AppendAnswer)
-		tracker.Update(snap)
-		ovl.SetBusy(false)
+			answer, snap, err := client.Solve(ctx, msgs, ovl.AppendAnswer)
+			tracker.Update(snap)
+			ovl.SetBusy(false)
 
-		if err != nil {
-			ovl.FinalizeAnswer(llm.Answer{Type: llm.None, Text: "Error: " + err.Error()})
-			return
-		}
+			if err != nil {
+				ovl.FinalizeAnswer(llm.Answer{Type: llm.None, Text: "Error: " + err.Error()})
+				return
+			}
 
-		current.Answer = answer.Text
-		thread.Commit(current)
-		answerBuffer = answer.Text
-		ovl.FinalizeAnswer(answer)
-		ovl.SetAnswerCount(thread.Len())
-		tray.Clear()
-		ovl.SetTrayCount(0)
-		ovl.SetInstruction("", false)
+			current.Answer = answer.Text
+			thread.Commit(current)
+			answerBuffer = answer.Text
+			ovl.FinalizeAnswer(answer)
+			ovl.SetAnswerCount(thread.Len())
+			tray.Clear()
+			ovl.SetTrayCount(0)
+			ovl.SetInstruction("", false)
+		}()
 	}
 
 	doType := func() {
@@ -168,14 +191,6 @@ func run() {
 
 	ovl.OnCapture(doCapture)
 	ovl.OnSend(doSend)
-	ovl.OnNewSession(func() {
-		cancelAll()
-		thread.Clear()
-		tray.Clear()
-		answerBuffer = ""
-		ovl.SetTrayCount(0)
-		ovl.SetAnswerCount(0)
-	})
 	ovl.OnListenToggle(func(on bool) {
 		listening = on
 		doListenToggle(on)
@@ -183,18 +198,19 @@ func run() {
 	ovl.OnSettings(func() {
 		overlay.ShowSettings(cfg)
 	})
-	ovl.OnSettingsSaved(func(apiKey, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
+	ovl.OnSettingsSaved(func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
 		cfg.APIKey = apiKey
-		cfg.Model = model
+		cfg.Provider = provider
 		cfg.Stealth = stealth
 		cfg.Humanise = humanise
 		cfg.BaseDelay = delay
 		cfg.ResumeProfile = resumeProfile
 		cfg.SpeechLocale = speechLocale
+		config.ApplyProviderDefaults(&cfg)
 		if err := config.Save(cfg); err != nil {
 			log.Printf("save settings: %v", err)
 		}
-		client = llm.NewGroq(cfg)
+		client = newClient(cfg)
 		thread = session.NewThreadFromConfig(cfg)
 		typerEngine = typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
 		ovl.SetStealth(cfg.Stealth)
@@ -206,11 +222,18 @@ func run() {
 		}
 	})
 
-	// Hotkeys — must be registered on the main thread.
-	mainthread.Call(func() {
+	// Hotkeys — register off the main goroutine. golang.design/x/hotkey
+	// internally dispatch_sync()s to the main queue to install its event tap.
+	// If we call that from the main thread before [NSApp run] starts, GCD can
+	// deadlock or abort. Running registration from a background goroutine lets
+	// the dispatch_sync block until the AppKit run loop is spinning.
+	go func() {
 		register := func(combo string, fn func()) {
+			log.Printf("registering hotkey %s", combo)
 			if _, err := hotkey.Register(combo, fn); err != nil {
 				log.Printf("hotkey disabled (%s): %v", combo, err)
+			} else {
+				log.Printf("hotkey registered %s", combo)
 			}
 		}
 		register(hotkey.Capture, doCapture)
@@ -221,7 +244,13 @@ func run() {
 			doListenToggle(listening)
 		})
 		register(hotkey.Cancel, cancelAll)
-	})
+		const step = 20
+		register(hotkey.MoveLeft, func() { ovl.Move(-step, 0) })
+		register(hotkey.MoveRight, func() { ovl.Move(step, 0) })
+		register(hotkey.MoveUp, func() { ovl.Move(0, step) })
+		register(hotkey.MoveDown, func() { ovl.Move(0, -step) })
+		log.Printf("hotkeys done")
+	}()
 
 	// Rate-limit indicator ticker.
 	go func() {
@@ -233,5 +262,16 @@ func run() {
 	}()
 
 	ovl.Show()
+	log.Printf("starting NSApp run loop")
 	overlay.Run()
+	log.Printf("NSApp run loop exited")
+}
+
+func newClient(cfg config.Config) llm.Client {
+	switch cfg.Provider {
+	case config.ProviderCerebras:
+		return llm.NewCerebras(cfg)
+	default:
+		return llm.NewGroq(cfg)
+	}
 }

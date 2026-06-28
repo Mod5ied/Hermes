@@ -59,7 +59,6 @@ deps:
 	go get github.com/kbinani/screenshot
 	go get golang.org/x/image/draw
 	go get golang.design/x/hotkey
-	go get golang.design/x/mainthread
 	go get github.com/ledongthuc/pdf
 	go get github.com/stretchr/testify
 

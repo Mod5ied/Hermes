@@ -13,6 +13,9 @@ const (
 	ConfigName  = "config.json"
 	APIKeyEnv   = "HERMES_GROQ_API_KEY"
 	DefaultBase = "https://api.groq.com/openai/v1"
+
+	ProviderGroq     = "Groq"
+	ProviderCerebras = "Cerebras"
 )
 
 // Rect represents a screen region in display pixels.
@@ -28,6 +31,7 @@ type Config struct {
 	APIKey        string        `json:"api_key"`
 	BaseURL       string        `json:"base_url"`
 	Model         string        `json:"model"`
+	Provider      string        `json:"provider"`
 	Stealth       bool          `json:"stealth"`
 	Humanise      bool          `json:"humanise"`
 	BaseDelay     time.Duration `json:"base_delay_ms"`
@@ -43,12 +47,30 @@ func Default() Config {
 	return Config{
 		BaseURL:      DefaultBase,
 		Model:        "meta-llama/llama-4-scout-17b-16e-instruct",
+		Provider:     ProviderGroq,
 		Stealth:      true,
 		Humanise:     true,
-		BaseDelay:    25 * time.Millisecond,
+		BaseDelay:    90 * time.Millisecond,
 		ContextTurns: 12,
 		ImageWindow:  1,
 		SpeechLocale: "",
+	}
+}
+
+// ApplyProviderDefaults sets BaseURL and Model from the configured provider.
+func ApplyProviderDefaults(c *Config) {
+	switch c.Provider {
+	case ProviderCerebras:
+		c.BaseURL = "https://api.cerebras.ai/v1"
+		if c.Model == "" || c.Model == "meta-llama/llama-4-scout-17b-16e-instruct" {
+			c.Model = "llama3.1-70b"
+		}
+	default:
+		c.Provider = ProviderGroq
+		c.BaseURL = DefaultBase
+		if c.Model == "" || c.Model == "llama3.1-70b" {
+			c.Model = "meta-llama/llama-4-scout-17b-16e-instruct"
+		}
 	}
 }
 
@@ -102,6 +124,10 @@ func Load() (Config, error) {
 	if cfg.Model == "" {
 		cfg.Model = "meta-llama/llama-4-scout-17b-16e-instruct"
 	}
+	if cfg.Provider == "" {
+		cfg.Provider = ProviderGroq
+	}
+	ApplyProviderDefaults(&cfg)
 	if cfg.ContextTurns <= 0 {
 		cfg.ContextTurns = 12
 	}

@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,20 +8,21 @@ import (
 
 func TestParseAnswer(t *testing.T) {
 	cases := []struct {
-		input string
-		want  AnswerType
+		input     string
+		wantType  AnswerType
+		wantText  string
 	}{
-		{"Select B", Select},
-		{"Select A and D", Select},
-		{"No question detected", None},
-		{"func main() {}", Code},
-		{"This is a sentence answer.", Sentence},
+		{"Select B", Select, "Select B"},
+		{"Select A and D", Select, "Select A and D"},
+		{"No question detected", None, ""},
+		{"func main() {}", Code, "func main() {}"},
+		{"This is a sentence answer.", Sentence, "This is a sentence answer."},
 	}
 
 	for _, c := range cases {
 		ans := ParseAnswer(c.input)
-		assert.Equal(t, c.want, ans.Type, "input: %q", c.input)
-		assert.Equal(t, strings.TrimSpace(c.input), ans.Text)
+		assert.Equal(t, c.wantType, ans.Type, "input: %q", c.input)
+		assert.Equal(t, c.wantText, ans.Text)
 	}
 }
 

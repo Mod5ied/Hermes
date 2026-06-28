@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -64,25 +65,48 @@ func NewGroq(cfg config.Config) Client {
 	if base == "" {
 		base = config.DefaultBase
 	}
-	return &groqClient{
+	return &openAIClient{
 		apiKey: cfg.APIKey,
 		base:   base,
 		model:  cfg.Model,
 	}
 }
 
-type groqClient struct {
+// NewCerebras builds a Cerebras client from config.
+func NewCerebras(cfg config.Config) Client {
+	base := cfg.BaseURL
+	if base == "" {
+		base = "https://api.cerebras.ai/v1"
+	}
+	return &openAIClient{
+		apiKey: cfg.APIKey,
+		base:   base,
+		model:  cfg.Model,
+	}
+}
+
+type openAIClient struct {
 	apiKey string
 	base   string
 	model  string
 }
 
 // Solve implements Client.
-func (c *groqClient) Solve(ctx context.Context, messages []Message, onDelta func(text string)) (Answer, ratelimit.Snapshot, error) {
+func (c *openAIClient) Solve(ctx context.Context, messages []Message, onDelta func(text string)) (Answer, ratelimit.Snapshot, error) {
 	var snap ratelimit.Snapshot
 	body, err := c.buildBody(messages)
 	if err != nil {
 		return Answer{}, snap, err
+	}
+
+	// Diagnostic: log the shape of every request without exposing the API key.
+	totalImages := 0
+	for _, m := range messages {
+		totalImages += len(m.ImageDataURLs)
+	}
+	if len(messages) > 0 {
+		log.Printf("Hermes: Solve request turns=%d lastTextLen=%d images=%d",
+			len(messages), len(messages[len(messages)-1].Text), totalImages)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.base+"/chat/completions", bytes.NewReader(body))
@@ -104,7 +128,7 @@ func (c *groqClient) Solve(ctx context.Context, messages []Message, onDelta func
 	}
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return Answer{}, snap, fmt.Errorf("groq returned %d: %s", resp.StatusCode, string(data))
+		return Answer{}, snap, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(data))
 	}
 
 	var full strings.Builder
@@ -120,7 +144,7 @@ func (c *groqClient) Solve(ctx context.Context, messages []Message, onDelta func
 	return ParseAnswer(full.String()), snap, nil
 }
 
-func (c *groqClient) buildBody(messages []Message) ([]byte, error) {
+func (c *openAIClient) buildBody(messages []Message) ([]byte, error) {
 	req := map[string]interface{}{
 		"model":               c.model,
 		"stream":              true,
@@ -164,7 +188,7 @@ func buildAPIMessages(messages []Message) []map[string]interface{} {
 	return out
 }
 
-func (c *groqClient) stream(r io.Reader, onDelta func(string)) error {
+func (c *openAIClient) stream(r io.Reader, onDelta func(string)) error {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -196,7 +220,7 @@ func (c *groqClient) stream(r io.Reader, onDelta func(string)) error {
 func ParseAnswer(text string) Answer {
 	text = strings.TrimSpace(text)
 	if text == "" || text == "No question detected" {
-		return Answer{Type: None, Text: text}
+		return Answer{Type: None, Text: ""}
 	}
 	if strings.HasPrefix(text, "Select ") {
 		return Answer{Type: Select, Text: text}
@@ -222,7 +246,7 @@ func SystemPrompt(resumeProfile string) string {
 	return strings.ReplaceAll(systemPromptTemplate, "{{PROFILE}}", profile)
 }
 
-const systemPromptTemplate = `You are a silent answer engine. You are given a question to answer. It can arrive as text the user dictated or typed, which is often a question an interviewer asked aloud, or as a screenshot of the user's screen, or as both. If text is present, treat it as the question and use any screenshot as supporting context. If only a screenshot is present, find the question, prompt, problem, or task on the screen. Work out the single correct response. Return only that response, formatted exactly as the rules below require. Never explain what you are doing. Never add greetings, preambles, or sign-offs. Your output is piped straight into an auto-typer, so anything extra gets typed verbatim and breaks the answer.
+const systemPromptTemplate = `You are a silent answer engine. You are given a question to answer. It can arrive as text the user dictated or typed, which is often a question an interviewer asked aloud, or as a screenshot of the user's screen, or as both. If text is present, treat it as the question and use any screenshot as supporting context. If only a screenshot is present, find the question, prompt, problem, or task on the screen. Work out the correct response(s). If the screen contains multiple distinct questions, answer each one briefly. Return only that response, formatted exactly as the rules below require. Never explain what you are doing. Never add greetings, preambles, or sign-offs. Your output is piped straight into an auto-typer, so anything extra gets typed verbatim and breaks the answer.
 
 If the user's text includes an instruction about how to answer (for example a language or a length), follow it, but still obey the output format below.
 
@@ -236,9 +260,9 @@ CANDIDATE PROFILE:
 When the question is about the candidate's experience, background, motivation, or fit (for example "tell me about a time", "why do you want this role", "what is your experience with X", "walk me through your background"), answer in the first person as the candidate, grounded in the profile. Be specific to what the profile actually contains. Do not invent roles, employers, or qualifications the profile does not support. Keep it short and real, the way a person speaks, not a generic essay. For technical, factual, selection, or coding questions, answer on the merits and use the profile only if it is relevant. If no profile is provided, answer normally.
 
 STEP 1. Decide the answer type.
-- SELECT: the screen offers a fixed set of options the user picks from (radio buttons, checkboxes, a multiple-choice list, a dropdown, "choose A/B/C/D", true or false).
+- SELECT: the screen offers a fixed set of options the user picks from (radio buttons, checkboxes, a multiple-choice list with labelled A/B/C/D options, a dropdown, "choose X/Y/Z", true or false). A plain numbered list of questions without selectable options is NOT a SELECT question; treat it as SENTENCE.
 - CODE: the screen asks for code (a coding problem, an algorithm, "write a function", a failing test to fix, a query to write).
-- SENTENCE: anything where the user writes free text in their own words (short answer, explanation, behavioural question, essay, email, message, "describe", "why would you").
+- SENTENCE: anything where the user writes free text in their own words (short answer, explanation, behavioural question, essay, email, message, "describe", "why would you", a list of numbered questions).
 
 STEP 2. Produce the output for that type and nothing else.
 
@@ -251,7 +275,7 @@ Examples:
 
 CODE -> Output only the code, in the language the screen implies (infer from the file, the prompt, or the existing snippet). No prose around it unless the question explicitly asks you to explain. Do not write comments that narrate a change. Any comment describes the code as it is.
 
-SENTENCE -> Output the answer as natural written English the user can paste as their own words. Apply every writing rule below. No preamble such as "Sure" or "Here is". Just the answer.
+SENTENCE -> Output the answer as natural written English the user can paste as their own words. Apply every writing rule below. No preamble such as "Sure" or "Here is". Just the answer. If the screenshot shows multiple numbered questions, answer each one with a short explanation and match the numbering (for example "1. ... 2. ..."). Do not collapse them into a single SELECT option.
 
 Writing rules for SENTENCE answers:
 - No em dashes or en dashes anywhere. Use a full stop, comma, colon, or brackets instead.
@@ -270,6 +294,5 @@ Writing rules for SENTENCE answers:
 - Use British spelling.
 - Match the length the question asks for. A one-line question gets one or two sentences. An essay prompt gets a full answer. Do not bulk up a short answer.
 
-If you cannot find a question in the text or on the screen, output exactly:
-  No question detected
+If a screenshot is provided, answer the user's question about it. If the user only sends a screenshot with no explicit question, provide a response to the questions, prompts, or tasks visible in the screenshot, following the output format above. Numbered questions in the screenshot should be answered as SENTENCE, not SELECT. Never output "No question detected".
 and nothing else.`

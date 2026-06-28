@@ -71,7 +71,7 @@ func (t *Thread) Build(current Turn) []llm.Message {
 	for _, turn := range t.turns[start:] {
 		userText := turn.Instruction
 		if userText == "" {
-			userText = "screen shown"
+			userText = "screenshot attached"
 		}
 		msgs = append(msgs, llm.Message{
 			Role: "user",
@@ -107,7 +107,11 @@ func (t *Thread) Build(current Turn) []llm.Message {
 
 	currentText := current.Instruction
 	if currentText == "" {
-		currentText = "screen shown"
+		if len(current.ImageDataURLs) > 0 {
+			currentText = "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."
+		} else {
+			currentText = "screenshot attached"
+		}
 	}
 	msgs = append(msgs, llm.Message{
 		Role:          "user",

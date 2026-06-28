@@ -1,8 +1,18 @@
 #import <Cocoa/Cocoa.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
 
 static NSString *HermesBundleID = @"com.hermes.app";
+
+@interface HermesRegionWindow : NSPanel
+@end
+
+@implementation HermesRegionWindow
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+@end
 
 double hermes_backing_scale(void) {
     NSScreen *screen = [NSScreen mainScreen];
@@ -35,12 +45,12 @@ double hermes_backing_scale(void) {
 
 - (void)run {
     NSRect frame = [[NSScreen mainScreen] frame];
-    NSWindow *window = [[NSPanel alloc] initWithContentRect:frame
-                                                  styleMask:NSWindowStyleMaskBorderless
-                                                    backing:NSBackingStoreBuffered
-                                                      defer:NO];
+    HermesRegionWindow *window = [[HermesRegionWindow alloc] initWithContentRect:frame
+                                                                       styleMask:NSWindowStyleMaskBorderless
+                                                                         backing:NSBackingStoreBuffered
+                                                                           defer:NO];
     [window setTitle:@"Hermes Region Selector"];
-    [window setLevel:NSStatusWindowLevel];
+    [window setLevel:CGWindowLevelForKey(kCGAssistiveTechHighWindowLevelKey)];
     [window setBackgroundColor:[NSColor colorWithCalibratedWhite:0.0 alpha:0.15]];
     [window setOpaque:NO];
     [window setHasShadow:NO];
@@ -49,6 +59,7 @@ double hermes_backing_scale(void) {
     [window setSharingType:NSWindowSharingNone];
     [window setDelegate:self];
     [window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
     self.window = window;
 
     self.overlay = [[NSBox alloc] initWithFrame:NSZeroRect];
@@ -59,6 +70,12 @@ double hermes_backing_scale(void) {
     [self.overlay setTransparent:NO];
     [[window contentView] addSubview:self.overlay];
 
+    // Show the seed selection, if any, so the user can adjust the previous area.
+    if (NSWidth(self.selection) > 0 && NSHeight(self.selection) > 0) {
+        [self.overlay setFrame:self.selection];
+        [self.overlay setNeedsDisplay:YES];
+    }
+
     NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDown |
                        NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp |
                        NSEventMaskKeyDown;
@@ -68,8 +85,11 @@ double hermes_backing_scale(void) {
                                                         inMode:NSEventTrackingRunLoopMode
                                                        dequeue:YES])) {
         [self handleEvent:event];
-        [NSApp sendEvent:event];
+        if (!self.done) {
+            [NSApp sendEvent:event];
+        }
     }
+    [self.window orderOut:nil];
 }
 
 - (void)handleEvent:(NSEvent *)event {
@@ -112,19 +132,24 @@ double hermes_backing_scale(void) {
 void hermes_select_region(int seedX, int seedY, int seedW, int seedH,
                           int *outX, int *outY, int *outW, int *outH) {
     NSRect seed = NSMakeRect((CGFloat)seedX, (CGFloat)seedY, (CGFloat)seedW, (CGFloat)seedH);
-    HermesRegionSelector *selector = [[HermesRegionSelector alloc] initWithSeed:seed];
-    [selector run];
+    __block int bx = 0, by = 0, bw = 0, bh = 0;
 
-    if (selector.cancelled || selector.selection.size.width < 2 || selector.selection.size.height < 2) {
-        *outX = 0; *outY = 0; *outW = 0; *outH = 0;
-        return;
-    }
+    // The selector creates AppKit windows and pumps events, so it must run on
+    // the main thread while the calling goroutine waits for the result.
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        HermesRegionSelector *selector = [[HermesRegionSelector alloc] initWithSeed:seed];
+        [selector run];
 
-    NSRect r = selector.selection;
-    *outX = (int)round(NSMinX(r));
-    *outY = (int)round(NSMinY(r));
-    *outW = (int)round(NSWidth(r));
-    *outH = (int)round(NSHeight(r));
+        if (!selector.cancelled && selector.selection.size.width >= 2 && selector.selection.size.height >= 2) {
+            NSRect r = selector.selection;
+            bx = (int)round(NSMinX(r));
+            by = (int)round(NSMinY(r));
+            bw = (int)round(NSWidth(r));
+            bh = (int)round(NSHeight(r));
+        }
+    });
+
+    *outX = bx; *outY = by; *outW = bw; *outH = bh;
 }
 
 // Helper: find the display containing the rect. Falls back to main display.
