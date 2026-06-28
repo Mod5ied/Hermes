@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "_cgo_export.h"
 
@@ -202,10 +203,10 @@ void hermesOverlayInit(bool stealth) {
     static const CGFloat kIconGap = 6.0;
     static const CGFloat kInputHeight = 28.0;
 
-    // Five icon buttons (mic, capture, clip, history, gear) with six
-    // evenly-sized gaps around the input field. Compute input width so the
-    // bar fills its 20%-narrower frame with no dead space on the right.
-    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 5*kIconSize - 6*kIconGap;
+    // Four icon buttons (mic, capture, clip, gear) with four evenly-sized
+    // gaps around the input field. Compute input width so the bar fills its
+    // frame with no dead space on the right.
+    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 4*kIconSize - 4*kIconGap;
 
     CGFloat xpos = kOuterPad;
     CGFloat ypos = (kBarHeight - kIconSize) / 2.0;
@@ -238,6 +239,16 @@ void hermesOverlayInit(bool stealth) {
     [gIndicatorDot setFrame:NSMakeRect(inputRight - 28, ypos + 9, 10, 10)];
     [root addSubview:gIndicatorDot];
 
+    gIndicatorLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(inputRight - 16, ypos, 26, kIconSize)];
+    [gIndicatorLabel setEditable:NO];
+    [gIndicatorLabel setBordered:NO];
+    [gIndicatorLabel setDrawsBackground:NO];
+    [gIndicatorLabel setTextColor:[NSColor lightGrayColor]];
+    [gIndicatorLabel setFont:[NSFont systemFontOfSize:10]];
+    [gIndicatorLabel setStringValue:@""];
+    [gIndicatorLabel setRefusesFirstResponder:YES];
+    [root addSubview:gIndicatorLabel];
+
     xpos += inputWidth + kIconGap;
 
     NSButton *capBtn = makeIconButton(@"camera.viewfinder", @"Capture (CMD+H)", @selector(onCapture:));
@@ -260,11 +271,6 @@ void hermesOverlayInit(bool stealth) {
     [gTrayBadge setRefusesFirstResponder:YES];
     [root addSubview:gTrayBadge];
 
-    xpos += kIconSize + kIconGap;
-
-    NSButton *histBtn = makeIconButton(@"clock.arrow.circlepath", @"History", @selector(onHistory:));
-    [histBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:histBtn];
     xpos += kIconSize + kIconGap;
 
     NSButton *gearBtn = makeIconButton(@"gearshape", @"Settings", @selector(onSettings:));
@@ -458,8 +464,8 @@ void hermesOverlayFreeString(char *s) {
 
 static NSAttributedString *formatAnswerText(NSString *text) {
     NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
-    NSFont *bodyFont = [NSFont systemFontOfSize:13];
-    NSFont *codeFont = [NSFont userFixedPitchFontOfSize:12];
+    NSFont *bodyFont = [NSFont systemFontOfSize:10];
+    NSFont *codeFont = [NSFont userFixedPitchFontOfSize:9];
     NSColor *bodyColor = [NSColor whiteColor];
     NSColor *codeColor = [NSColor colorWithCalibratedWhite:0.85 alpha:1.0];
     NSColor *codeBg = [NSColor colorWithCalibratedWhite:0.15 alpha:1.0];
@@ -572,17 +578,36 @@ void hermesOverlayFinalizeAnswer(const char *text) {
     });
 }
 
+static void setDotPulsing(BOOL pulse) {
+    if (!gIndicatorDot) return;
+    if (pulse) {
+        if ([gIndicatorDot.layer animationForKey:@"pulse"]) return;
+        CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        anim.fromValue = @1.0;
+        anim.toValue = @0.3;
+        anim.duration = 0.6;
+        anim.autoreverses = YES;
+        anim.repeatCount = HUGE_VALF;
+        [gIndicatorDot.layer addAnimation:anim forKey:@"pulse"];
+    } else {
+        [gIndicatorDot.layer removeAnimationForKey:@"pulse"];
+    }
+}
+
 void hermesOverlaySetIndicator(bool canSend, int clearsInSeconds) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!gIndicatorDot) return;
         if (canSend) {
             gIndicatorDot.layer.backgroundColor = [NSColor greenColor].CGColor;
+            setDotPulsing(NO);
+            if (gIndicatorLabel) [gIndicatorLabel setStringValue:@""];
         } else {
             gIndicatorDot.layer.backgroundColor = [NSColor redColor].CGColor;
-        }
-        // The colored dot is the only indicator; keep the label empty.
-        if (gIndicatorLabel) {
-            [gIndicatorLabel setStringValue:@""];
+            setDotPulsing(YES);
+            if (gIndicatorLabel) {
+                NSString *label = clearsInSeconds > 0 ? [NSString stringWithFormat:@"%ds", clearsInSeconds] : @"";
+                [gIndicatorLabel setStringValue:label];
+            }
         }
     });
 }
