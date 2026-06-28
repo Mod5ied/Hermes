@@ -4,7 +4,7 @@ Hermes is a minimal, single-binary macOS desktop assistant for live interviews a
 
 Name rationale: Hermes is the messenger god and the god of stealth - the two jobs of the app.
 
-It is a stripped-down, native alternative to Electron-based tools like Natively / Cluely / Interview Coder. No embedded browser, no telemetry, no server, no accounts. You bring your own Groq API key.
+It is a lighter, faster superior to Electron-based tools like Natively / Cluely / Interview Coder. No embedded browser, no telemetry, no server, no accounts. You bring your own Groq API key.
 
 ---
 
