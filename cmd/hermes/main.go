@@ -170,7 +170,7 @@ func run() {
 	}
 
 	doType := func() {
-		if answerBuffer == "" {
+		if answerBuffer == "" || typing {
 			return
 		}
 		typing = true
@@ -224,6 +224,7 @@ func run() {
 		typerEngine = typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
 		ovl.SetStealth(cfg.Stealth)
 	})
+	ovl.OnType(doType)
 	ovl.OnTypeReady(func() {
 		if typing {
 			_ = typerEngine.Type(answerBuffer)

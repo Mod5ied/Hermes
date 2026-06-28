@@ -16,7 +16,10 @@ static NSTextField *gIndicatorLabel = nil;
 static NSProgressIndicator *gSpinner = nil;
 static NSTextField *gTrayBadge = nil;
 static NSButton *gMicButton = nil;
+static NSButton *gTypeButton = nil;
+static NSTextField *gTypeBadge = nil;
 static NSMutableArray<NSString *> *gAnswerHistory = nil;
+static int gCountdownGeneration = 0;
 static NSInteger gHistoryIndex = -1;
 static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
@@ -203,10 +206,10 @@ void hermesOverlayInit(bool stealth) {
     static const CGFloat kIconGap = 6.0;
     static const CGFloat kInputHeight = 28.0;
 
-    // Four icon buttons (mic, capture, clip, gear) with four evenly-sized
+    // Five icon buttons (mic, type, capture, clip, gear) with six evenly-sized
     // gaps around the input field. Compute input width so the bar fills its
     // frame with no dead space on the right.
-    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 4*kIconSize - 4*kIconGap;
+    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 5*kIconSize - 6*kIconGap;
 
     CGFloat xpos = kOuterPad;
     CGFloat ypos = (kBarHeight - kIconSize) / 2.0;
@@ -250,6 +253,35 @@ void hermesOverlayInit(bool stealth) {
     [root addSubview:gIndicatorLabel];
 
     xpos += inputWidth + kIconGap;
+
+    NSButton *typeBtn = [NSButton buttonWithImage:sfIcon(@"keyboard", @"Type answer (CMD+T)")
+                                           target:nil
+                                           action:@selector(onType:)];
+    [typeBtn setBezelStyle:NSBezelStyleRegularSquare];
+    [typeBtn setBordered:NO];
+    [typeBtn setImagePosition:NSImageOnly];
+    [typeBtn setToolTip:@"Type answer (CMD+T)"];
+    [typeBtn setContentTintColor:[NSColor whiteColor]];
+    [typeBtn setWantsLayer:YES];
+    typeBtn.layer.cornerRadius = kIconSize / 2.0;
+    typeBtn.layer.backgroundColor = [NSColor clearColor].CGColor;
+    [typeBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
+    [root addSubview:typeBtn];
+    gTypeButton = typeBtn;
+    xpos += kIconSize + kIconGap;
+
+    // Countdown badge sits on top of the type button.
+    gTypeBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos - 14, ypos + kIconSize - 13, 16, 14)];
+    [gTypeBadge setEditable:NO];
+    [gTypeBadge setBordered:NO];
+    [gTypeBadge setDrawsBackground:NO];
+    [gTypeBadge setTextColor:[NSColor whiteColor]];
+    [gTypeBadge setFont:[NSFont boldSystemFontOfSize:10]];
+    [gTypeBadge setStringValue:@""];
+    [gTypeBadge setAlignment:NSTextAlignmentCenter];
+    [gTypeBadge setRefusesFirstResponder:YES];
+    [gTypeBadge setHidden:YES];
+    [root addSubview:gTypeBadge];
 
     NSButton *capBtn = makeIconButton(@"camera.viewfinder", @"Capture (CMD+H)", @selector(onCapture:));
     [capBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
@@ -637,29 +669,45 @@ void hermesOverlaySetAnswerCount(int n) {
     (void)n;
 }
 
-static void countdownStep(int seconds) {
+static void restoreTypeButton(void) {
+    if (gTypeButton) gTypeButton.layer.backgroundColor = [NSColor clearColor].CGColor;
+    if (gTypeBadge) [gTypeBadge setHidden:YES];
+}
+
+static void countdownStep(int seconds, int generation) {
     if (!gCountdown) return;
-    // Countdown runs silently; the spinner on the bar is the only indicator.
+    if (generation != gCountdownGeneration) return;
     if (seconds > 0) {
         [gCountdown setStringValue:@""];
+        if (gTypeBadge) {
+            [gTypeBadge setStringValue:[NSString stringWithFormat:@"%d", seconds]];
+            [gTypeBadge setHidden:NO];
+        }
+        if (gTypeButton) {
+            gTypeButton.layer.backgroundColor = [NSColor colorWithCalibratedRed:1.0 green:0.7 blue:0.0 alpha:1.0].CGColor;
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            countdownStep(seconds - 1);
+            countdownStep(seconds - 1, generation);
         });
     } else {
         [gCountdown setStringValue:@""];
+        restoreTypeButton();
         hermesOverlayOnTypeReady();
     }
 }
 
 void hermesOverlayCountdown(int seconds) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        countdownStep(seconds);
+        gCountdownGeneration++;
+        countdownStep(seconds, gCountdownGeneration);
     });
 }
 
 void hermesOverlayCancelCountdown(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        gCountdownGeneration++;
         if (gCountdown) [gCountdown setStringValue:@""];
+        restoreTypeButton();
     });
 }
 
@@ -892,6 +940,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onSend:(id)sender;
 - (void)onInputSend:(id)sender;
 - (void)onMic:(id)sender;
+- (void)onType:(id)sender;
 - (void)onTray:(id)sender;
 - (void)onHistory:(id)sender;
 - (void)onNewSession:(id)sender;
@@ -917,6 +966,9 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
     gListening = !gListening;
     updateMicButton();
     hermesOverlayOnListenToggle(gListening ? 1 : 0);
+}
+- (void)onType:(id)sender {
+    hermesOverlayOnType();
 }
 - (void)onTray:(id)sender {
     // Tray management UI could open here.

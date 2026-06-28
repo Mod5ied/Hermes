@@ -56,6 +56,7 @@ type Overlay interface {
 	OnNewSession(handler func())
 	OnListenToggle(handler func(on bool))
 	OnSettings(handler func())
+	OnType(handler func())
 	OnTypeReady(handler func())
 	OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
 	Show()
@@ -88,6 +89,7 @@ type nativeOverlay struct {
 	onNewSession   func()
 	onListenToggle func(bool)
 	onSettings     func()
+	onType         func()
 	onTypeReady    func()
 	onSettingsSaved func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
 }
@@ -171,6 +173,10 @@ func (o *nativeOverlay) OnSettings(handler func()) {
 	o.onSettings = handler
 }
 
+func (o *nativeOverlay) OnType(handler func()) {
+	o.onType = handler
+}
+
 func (o *nativeOverlay) OnTypeReady(handler func()) {
 	o.onTypeReady = handler
 }
@@ -244,6 +250,13 @@ func hermesOverlayOnListenToggle(on C.int) {
 func hermesOverlayOnSettings() {
 	if currentOverlay != nil && currentOverlay.onSettings != nil {
 		currentOverlay.onSettings()
+	}
+}
+
+//export hermesOverlayOnType
+func hermesOverlayOnType() {
+	if currentOverlay != nil && currentOverlay.onType != nil {
+		currentOverlay.onType()
 	}
 }
 
