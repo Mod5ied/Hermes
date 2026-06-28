@@ -1,4 +1,4 @@
-# Hermes
+# Hermes (The Fastest & Best One Yet!)
 
 Hermes is a minimal, single-binary macOS desktop assistant for live interviews and meetings. It captures a region of the screen (or no screen at all), sends the image plus an optional instruction to Groq's Llama 4 Scout vision model, streams the answer back, and can type the result into the focused field with a visible countdown.
 
