@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.hermes.app</string>
+    <key>CFBundleName</key>
+    <string>Hermes</string>
+    <key>CFBundleExecutable</key>
+    <string>hermes</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Hermes transcribes the call app's audio output on-device so spoken questions can be answered.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Hermes does not use the microphone. This description is included for compatibility with speech APIs.</string>
+</dict>
+</plist>

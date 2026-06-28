@@ -1,0 +1,213 @@
+#import <Cocoa/Cocoa.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
+#import <Speech/Speech.h>
+#import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+
+#include "_cgo_export.h"
+
+// Swift SpeechAnalyzer entry points (from libspeechswift.a).
+extern int hermes_speech_analyzer_is_available(void);
+extern int hermes_speech_analyzer_locale_supported(const char *locale);
+extern int hermes_speech_analyzer_start(const char *locale, void (*callback)(char *text, int final));
+extern int hermes_speech_analyzer_feed_buffer(const int16_t *data, int32_t frameCount, double sampleRate, uint32_t channels);
+extern void hermes_speech_analyzer_stop(void);
+
+@interface HermesSpeechOutput : NSObject <SCStreamOutput>
+@property (nonatomic, strong) SFSpeechAudioBufferRecognitionRequest *fallbackRequest;
+@property (nonatomic, assign) BOOL useAnalyzer;
+@property (nonatomic, assign) double sampleRate;
+@property (nonatomic, assign) uint32_t channels;
+@end
+
+@implementation HermesSpeechOutput
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
+    if (type != SCStreamOutputTypeAudio) return;
+
+    CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
+    if (!blockBuffer) return;
+
+    size_t length = CMBlockBufferGetDataLength(blockBuffer);
+    if (length == 0) return;
+
+    AudioBufferList abl;
+    CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(sampleBuffer,
+                                                            NULL,
+                                                            &abl,
+                                                            sizeof(abl),
+                                                            NULL,
+                                                            NULL,
+                                                            kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+                                                            NULL);
+
+    if (self.useAnalyzer) {
+        int16_t *data = (int16_t *)abl.mBuffers[0].mData;
+        int32_t frames = (int32_t)(length / (sizeof(int16_t) * self.channels));
+        hermes_speech_analyzer_feed_buffer(data, frames, self.sampleRate, self.channels);
+        return;
+    }
+
+    // Fallback path: feed SFSpeechRecognizer.
+    if (!self.fallbackRequest) return;
+
+    AVAudioFormat *fmt = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:self.sampleRate channels:self.channels];
+    AVAudioPCMBuffer *pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:fmt
+                                                          frameCapacity:(AVAudioFrameCount)(length / (sizeof(int16_t) * self.channels))];
+    pcm.frameLength = pcm.frameCapacity;
+    memcpy(pcm.int16ChannelData[0], abl.mBuffers[0].mData, length);
+    [self.fallbackRequest appendAudioPCMBuffer:pcm];
+}
+@end
+
+static SFSpeechRecognizer *gRecognizer = nil;
+static SFSpeechAudioBufferRecognitionRequest *gRequest = nil;
+static SFSpeechRecognitionTask *gTask = nil;
+static AVAudioEngine *gEngine = nil;
+static SCStream *gStream = nil;
+static HermesSpeechOutput *gOutput = nil;
+static BOOL gUsingAnalyzer = NO;
+
+static void startMicrophoneFallback(void) {
+    gEngine = [[AVAudioEngine alloc] init];
+    AVAudioInputNode *input = gEngine.inputNode;
+    AVAudioFormat *fmt = [input outputFormatForBus:0];
+    [input installTapOnBus:0 bufferSize:4096 format:fmt block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+        if (gRequest) [gRequest appendAudioPCMBuffer:buffer];
+    }];
+    [gEngine startAndReturnError:nil];
+}
+
+static void startSCStream(HermesSpeechOutput *output, BOOL allowMicFallback) {
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
+        if (error || content.displays.count == 0) {
+            if (allowMicFallback) {
+                startMicrophoneFallback();
+            } else {
+                fprintf(stderr, "[Hermes Speech] SCStream unavailable for analyzer; stopping.\n");
+                hermes_speech_stop();
+            }
+            return;
+        }
+        SCDisplay *display = content.displays[0];
+        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+        SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
+        cfg.capturesAudio = YES;
+        cfg.sampleRate = 16000;
+        cfg.channelCount = 1;
+
+        gStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
+        NSError *addErr = nil;
+        [gStream addStreamOutput:output
+                            type:SCStreamOutputTypeAudio
+              sampleHandlerQueue:dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0)
+                           error:&addErr];
+        if (addErr) {
+            if (allowMicFallback) {
+                startMicrophoneFallback();
+            } else {
+                fprintf(stderr, "[Hermes Speech] SCStream addOutput failed for analyzer; stopping.\n");
+                hermes_speech_stop();
+            }
+            return;
+        }
+        [gStream startCaptureWithCompletionHandler:^(NSError *err) {
+            if (err) {
+                if (allowMicFallback) {
+                    startMicrophoneFallback();
+                } else {
+                    fprintf(stderr, "[Hermes Speech] SCStream start failed for analyzer; stopping.\n");
+                    hermes_speech_stop();
+                }
+            }
+        }];
+    }];
+}
+
+int hermes_speech_start(const char *locale) {
+    gUsingAnalyzer = NO;
+
+    NSString *loc = [NSString stringWithUTF8String:locale];
+    NSLocale *nsloc = [NSLocale localeWithLocaleIdentifier:loc];
+
+    // Primary: SpeechAnalyzer + SpeechTranscriber on macOS 26+.
+    if (@available(macOS 26.0, *)) {
+        if (hermes_speech_analyzer_is_available() &&
+            hermes_speech_analyzer_locale_supported(locale)) {
+            int ret = hermes_speech_analyzer_start(locale, hermesSpeechForward);
+            if (ret == 0) {
+                gUsingAnalyzer = YES;
+                fprintf(stderr, "[Hermes Speech] using SpeechAnalyzer\n");
+
+                gOutput = [[HermesSpeechOutput alloc] init];
+                gOutput.useAnalyzer = YES;
+                gOutput.sampleRate = 16000.0;
+                gOutput.channels = 1;
+
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    startSCStream(gOutput, NO);
+                });
+                return 0;
+            }
+            fprintf(stderr, "[Hermes Speech] SpeechAnalyzer start failed (%d), falling back\n", ret);
+        } else {
+            fprintf(stderr, "[Hermes Speech] SpeechAnalyzer unavailable for locale, falling back\n");
+        }
+    }
+
+    // Fallback: SFSpeechRecognizer.
+    fprintf(stderr, "[Hermes Speech] using SFSpeechRecognizer fallback\n");
+    gRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:nsloc];
+    if (!gRecognizer) gRecognizer = [SFSpeechRecognizer new];
+    if (!gRecognizer || !gRecognizer.available) return -1;
+
+    gRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
+    gRequest.requiresOnDeviceRecognition = YES;
+    gRequest.shouldReportPartialResults = YES;
+
+    gTask = [gRecognizer recognitionTaskWithRequest:gRequest
+                                        resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
+        if (error) {
+            hermesSpeechForward((char *)[@"" UTF8String], 1);
+            return;
+        }
+        if (result) {
+            NSString *text = result.bestTranscription.formattedString;
+            hermesSpeechForward((char *)[text UTF8String], result.isFinal ? 1 : 0);
+        }
+    }];
+
+    gOutput = [[HermesSpeechOutput alloc] init];
+    gOutput.useAnalyzer = NO;
+    gOutput.fallbackRequest = gRequest;
+    gOutput.sampleRate = 16000.0;
+    gOutput.channels = 1;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        startSCStream(gOutput, YES);
+    });
+
+    return 0;
+}
+
+void hermes_speech_stop(void) {
+    if (gStream) {
+        [gStream stopCaptureWithCompletionHandler:nil];
+        gStream = nil;
+    }
+    if (gUsingAnalyzer) {
+        hermes_speech_analyzer_stop();
+        gUsingAnalyzer = NO;
+    }
+    if (gTask) {
+        [gTask cancel];
+        gTask = nil;
+    }
+    gRequest = nil;
+    gOutput = nil;
+    if (gEngine) {
+        [gEngine stop];
+        [gEngine.inputNode removeTapOnBus:0];
+        gEngine = nil;
+    }
+    gRecognizer = nil;
+}

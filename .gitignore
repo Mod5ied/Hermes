@@ -1,0 +1,19 @@
+# Build outputs
+/hermes
+/Hermes.app
+/internal/speech/libspeechswift.a
+
+# Local code-signing keychain and certificates
+/HermesSigning.keychain-db
+/.codesign/
+*.p12
+*.crt
+*.key
+
+# macOS
+.DS_Store
+
+# Editor / temp
+*.swp
+*.tmp
+.fl*
