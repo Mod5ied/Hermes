@@ -12,6 +12,17 @@ private var gAnalyzerTask: Task<Void, Never>?
 private var gResultTask: Task<Void, Never>?
 private var gCallback: HermesSpeechCallback?
 private var gTargetFormat: AVAudioFormat?
+private var gConverter: AVAudioConverter?
+private var gConverterSrc: AVAudioFormat?
+
+private func converterTo(_ dst: AVAudioFormat, from src: AVAudioFormat) -> AVAudioConverter? {
+    if let c = gConverter, gConverterSrc == src { return c }
+    let c = AVAudioConverter(from: src, to: dst)
+    c?.sampleRateConverterQuality = .max
+    gConverter = c
+    gConverterSrc = src
+    return c
+}
 
 private func logEngine(_ message: String) {
     fputs("[Hermes SpeechAnalyzer] \(message)\n", stderr)
@@ -131,7 +142,7 @@ public func hermes_speech_analyzer_start(_ localeCStr: UnsafePointer<CChar>?, _ 
 
 @_cdecl("hermes_speech_analyzer_feed_buffer")
 public func hermes_speech_analyzer_feed_buffer(
-    _ data: UnsafePointer<Int16>?,
+    _ data: UnsafePointer<Float>?,
     _ frameCount: Int32,
     _ sampleRate: Double,
     _ channels: UInt32
@@ -141,32 +152,38 @@ public func hermes_speech_analyzer_feed_buffer(
     guard let targetFormat = gTargetFormat else { return -2 }
 
     let frames = AVAudioFrameCount(frameCount)
-    guard let srcFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                         sampleRate: sampleRate,
-                                         channels: channels,
-                                         interleaved: true) else { return -3 }
-    guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frames) else { return -4 }
+    guard let srcFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                        sampleRate: sampleRate,
+                                        channels: AVAudioChannelCount(channels),
+                                        interleaved: false),
+          let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frames) else { return -3 }
     srcBuffer.frameLength = frames
+    memcpy(srcBuffer.floatChannelData![0], data, Int(frameCount) * MemoryLayout<Float>.size)
 
-    let bytes = Int(frameCount) * Int(channels) * MemoryLayout<Int16>.size
-    memcpy(srcBuffer.audioBufferList.pointee.mBuffers.mData, data, bytes)
+    if srcFormat == targetFormat {
+        gInputContinuation?.yield(AnalyzerInput(buffer: srcBuffer))
+        return 0
+    }
+    guard let converter = converterTo(targetFormat, from: srcFormat) else { return -5 }
 
-    guard let converter = AVAudioConverter(from: srcFormat, to: targetFormat) else { return -5 }
-    guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frames) else { return -6 }
+    let ratio = targetFormat.sampleRate / srcFormat.sampleRate
+    let outCap = AVAudioFrameCount(Double(frameCount) * ratio) + 16
+    guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap) else { return -6 }
 
-    var error: NSError?
-    converter.convert(to: dstBuffer, error: &error) { inNumPackets, outStatus in
+    var provided = false
+    var convErr: NSError?
+    _ = converter.convert(to: dstBuffer, error: &convErr) { _, outStatus in
+        if provided { outStatus.pointee = .noDataNow; return nil }
+        provided = true
         outStatus.pointee = .haveData
         return srcBuffer
     }
-
-    if let err = error {
+    if let err = convErr {
         logEngine("converter error: \(err.localizedDescription)")
         return -7
     }
-
-    let input = AnalyzerInput(buffer: dstBuffer)
-    gInputContinuation?.yield(input)
+    if dstBuffer.frameLength == 0 { return 0 }
+    gInputContinuation?.yield(AnalyzerInput(buffer: dstBuffer))
     return 0
 }
 
@@ -192,6 +209,8 @@ public func hermes_speech_analyzer_stop() {
     gResultTask = nil
     gCallback = nil
     gTargetFormat = nil
+    gConverter = nil
+    gConverterSrc = nil
 }
 
 private func notify(text: String, final: Bool) {

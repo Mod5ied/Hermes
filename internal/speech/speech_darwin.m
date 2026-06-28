@@ -10,7 +10,7 @@
 extern int hermes_speech_analyzer_is_available(void);
 extern int hermes_speech_analyzer_locale_supported(const char *locale);
 extern int hermes_speech_analyzer_start(const char *locale, void (*callback)(char *text, int final));
-extern int hermes_speech_analyzer_feed_buffer(const int16_t *data, int32_t frameCount, double sampleRate, uint32_t channels);
+extern int hermes_speech_analyzer_feed_buffer(const float *data, int32_t frameCount, double sampleRate, uint32_t channels);
 extern void hermes_speech_analyzer_stop(void);
 
 @interface HermesSpeechOutput : NSObject <SCStreamOutput>
@@ -23,39 +23,55 @@ extern void hermes_speech_analyzer_stop(void);
 @implementation HermesSpeechOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
     if (type != SCStreamOutputTypeAudio) return;
+    if (!CMSampleBufferDataIsReady(sampleBuffer)) return;
 
-    CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
-    if (!blockBuffer) return;
+    CMFormatDescriptionRef fmtDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (!fmtDesc) return;
+    const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc);
+    if (!asbd) return;
 
-    size_t length = CMBlockBufferGetDataLength(blockBuffer);
-    if (length == 0) return;
-
-    AudioBufferList abl;
-    CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(sampleBuffer,
-                                                            NULL,
-                                                            &abl,
-                                                            sizeof(abl),
-                                                            NULL,
-                                                            NULL,
-                                                            kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-                                                            NULL);
-
-    if (self.useAnalyzer) {
-        int16_t *data = (int16_t *)abl.mBuffers[0].mData;
-        int32_t frames = (int32_t)(length / (sizeof(int16_t) * self.channels));
-        hermes_speech_analyzer_feed_buffer(data, frames, self.sampleRate, self.channels);
+    double   sampleRate = asbd->mSampleRate;
+    uint32_t channels   = asbd->mChannelsPerFrame;
+    BOOL     isFloat    = (asbd->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    if (!isFloat || asbd->mBitsPerChannel != 32) {
+        static BOOL warned = NO;
+        if (!warned) {
+            warned = YES;
+            fprintf(stderr, "[Hermes Speech] unexpected fmt: float=%d bits=%u\n", isFloat, asbd->mBitsPerChannel);
+        }
         return;
     }
 
-    // Fallback path: feed SFSpeechRecognizer.
-    if (!self.fallbackRequest) return;
+    AudioBufferList abl;
+    CMBlockBufferRef block = NULL;
+    OSStatus st = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+        sampleBuffer, NULL, &abl, sizeof(abl), NULL, NULL,
+        kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, &block);
+    if (st != noErr || abl.mNumberBuffers == 0) { if (block) CFRelease(block); return; }
 
-    AVAudioFormat *fmt = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:self.sampleRate channels:self.channels];
-    AVAudioPCMBuffer *pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:fmt
-                                                          frameCapacity:(AVAudioFrameCount)(length / (sizeof(int16_t) * self.channels))];
-    pcm.frameLength = pcm.frameCapacity;
-    memcpy(pcm.int16ChannelData[0], abl.mBuffers[0].mData, length);
-    [self.fallbackRequest appendAudioPCMBuffer:pcm];
+    const float *data = (const float *)abl.mBuffers[0].mData;
+    int32_t frames = (int32_t)(abl.mBuffers[0].mDataByteSize / sizeof(float));
+
+    static BOOL logged = NO;
+    if (!logged) {
+        logged = YES;
+        double s = 0; for (int i = 0; i < frames; i++) s += (double)data[i]*data[i];
+        fprintf(stderr, "[Hermes Speech] src float32 rate=%.0f ch=%u frames=%d rms=%.4f\n",
+                sampleRate, channels, frames, frames ? sqrt(s/frames) : 0);
+    }
+
+    if (self.useAnalyzer) {
+        hermes_speech_analyzer_feed_buffer(data, frames, sampleRate, channels);
+    } else if (self.fallbackRequest) {
+        AVAudioFormat *fmt = [[AVAudioFormat alloc] initWithCMAudioFormatDescription:fmtDesc];
+        AVAudioPCMBuffer *pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:fmt frameCapacity:(AVAudioFrameCount)frames];
+        if (pcm) {
+            pcm.frameLength = (AVAudioFrameCount)frames;
+            memcpy(pcm.floatChannelData[0], data, abl.mBuffers[0].mDataByteSize);
+            [self.fallbackRequest appendAudioPCMBuffer:pcm];
+        }
+    }
+    if (block) CFRelease(block);
 }
 @end
 
@@ -65,6 +81,7 @@ static SFSpeechRecognitionTask *gTask = nil;
 static AVAudioEngine *gEngine = nil;
 static SCStream *gStream = nil;
 static HermesSpeechOutput *gOutput = nil;
+static dispatch_queue_t gAudioQueue = nil;
 static BOOL gUsingAnalyzer = NO;
 
 static void startMicrophoneFallback(void) {
@@ -97,9 +114,10 @@ static void startSCStream(HermesSpeechOutput *output, BOOL allowMicFallback) {
 
         gStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
         NSError *addErr = nil;
+        if (!gAudioQueue) gAudioQueue = dispatch_queue_create("com.hermes.audio", DISPATCH_QUEUE_SERIAL);
         [gStream addStreamOutput:output
                             type:SCStreamOutputTypeAudio
-              sampleHandlerQueue:dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0)
+              sampleHandlerQueue:gAudioQueue
                            error:&addErr];
         if (addErr) {
             if (allowMicFallback) {
