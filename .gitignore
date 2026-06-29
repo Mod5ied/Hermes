@@ -24,3 +24,6 @@ stature-ravager-psylocke.md
 
 # Generated icon set (source icns + script are committed)
 assets/*.iconset
+
+# Private technical docs (kept local, never committed)
+TECHNICAL_README.md
