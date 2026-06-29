@@ -1,6 +1,6 @@
-# Hermes
+# Hermes (The Fastest & Best One Yet!)
 
-Hermes is a lightweight macOS assistant for live interviews and meetings. It captures what is on your screen, listens to the call, and answers questions in a natural, spoken voice — then can type the answer into the focused field for you.
+Hermes is a lightweight macOS assistant for live interviews and meetings (5mb!, yea fuck you Cluely with your 400mb). It captures what is on your screen, listens to the call, and answers questions in a natural, spoken voice — then can type the answer into the focused field for you.
 
 No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
