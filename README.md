@@ -1,6 +1,6 @@
 # Hermes (The Fastest & Best One Yet!)
 
-Hermes is a minimal(9mb, yea fuck you Cluely with your 400mb), single-binary macOS desktop assistant for live interviews and meetings. It actively listens to your interviewer, and can captures a region of the screen (or no screen at all), sends the image plus an optional instruction to specialized model, streams the answer back, and can type the result into the focused field with a visible countdown.
+Hermes is a minimal(5mb!, yea fuck you Cluely with your 400mb), single-binary macOS desktop assistant for live interviews and meetings. It actively listens to your interviewer, and can captures a region of the screen (or no screen at all), sends the image plus an optional instruction to specialized model, streams the answer back, and can type the result into the focused field with a visible countdown.
 
 Name rationale: Hermes is the messenger god and the god of stealth - the two jobs of the app.
 
