@@ -1,6 +1,6 @@
 # Hermes (The Fastest & Best One Yet!)
 
-Hermes is a lightweight macOS assistant for live interviews and meetings (5mb!, yea fuck you Cluely with your 400mb). It captures what is on your screen, listens to the call, and answers questions in a natural, spoken voice — then can type the answer into the focused field for you.
+Hermes is a lightweight macOS assistant for live interviews and meetings (5mb!, yea fuck you Cluely with your 400mb). It captures what is on your screen, listens to the call, and answers questions in a natural, spoken voice, then can type the answer into the focused field for you.
 
 No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
@@ -21,19 +21,13 @@ No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
 - macOS 14 or later (speech transcription works best on macOS 26+)
 - Apple Silicon or Intel Mac
-- A Groq API key
+- A Groq or Cerebras API key
 
 ---
 
 ## Install
 
-Download `Hermes.app` from the [Releases](../../releases) page, or build it yourself:
-
-```bash
-make build
-make bundle
-./install.sh
-```
+Download `Hermes.app` from the [Releases](../../releases) page.
 
 The first time you run Hermes you will be asked to grant **Screen Recording**, **Accessibility**, and **Speech Recognition** permissions in System Settings. Restart the app after granting them.
 
