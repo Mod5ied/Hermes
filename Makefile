@@ -30,8 +30,10 @@ build: $(SPEECH_SWIFT)
 
 bundle: build
 	mkdir -p $(BUNDLE)/Contents/MacOS
+	mkdir -p $(BUNDLE)/Contents/Resources
 	cp $(APP) $(BUNDLE)/Contents/MacOS/
 	cp Info.plist $(BUNDLE)/Contents/
+	cp assets/AppIcon.icns $(BUNDLE)/Contents/Resources/
 	@if [ -f "$(CERT_KEYCHAIN)" ]; then \
 		echo "Signing with '$(CERT_NAME)' ..."; \
 		codesign --force --deep --keychain "$(CERT_KEYCHAIN)" --sign "$(CERT_NAME)" $(BUNDLE); \

@@ -12,6 +12,8 @@
     <string>0.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Hermes transcribes the call app's audio output on-device so spoken questions can be answered.</string>
     <key>NSMicrophoneUsageDescription</key>

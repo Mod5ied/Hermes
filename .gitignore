@@ -21,3 +21,6 @@
 # Private tech specs (kept local, never committed)
 tech-specs.md
 stature-ravager-psylocke.md
+
+# Generated icon set (source icns + script are committed)
+assets/*.iconset
