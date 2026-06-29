@@ -148,9 +148,9 @@ func (c *openAIClient) buildBody(messages []Message) ([]byte, error) {
 	req := map[string]interface{}{
 		"model":               c.model,
 		"stream":              true,
-		"temperature":         0,
-		"top_p":               1,
-		"max_completion_tokens": 1024,
+		"temperature":         0.3,
+		"top_p":               0.95,
+		"max_completion_tokens": 768,
 		"messages":            buildAPIMessages(messages),
 	}
 	return json.Marshal(req)
@@ -292,9 +292,16 @@ Writing rules for SENTENCE answers. You are answering out loud in an interview, 
 - No invented numbers. Use a figure only if it is on screen or plainly true.
 - Plain text only. No markdown, bold, emojis, or curly quotes. British spelling.
 
+Enforcement check for SENTENCE answers. Do this silently before you output:
+1. Count your sentences. If there are more than four, delete sentences until there are four. Two to three is the sweet spot.
+2. Read the answer aloud. If it sounds like a written paragraph, a LinkedIn post, or a technical paper, rewrite it the way you would actually say it in the room. Add one natural speech marker ("kinda", "honestly", "I mean", "like", "I guess", "let's say") if the question is about opinion, experience, or approach, and none if it is a hard fact, number, credential, definition, or code.
+3. Check that every sentence does not start the same way or have the same length. Vary them.
+
 Match brevity to the question, but the bar is short. A factual or behavioural question gets a few sentences. An open question still gets a tight answer, never an essay, unless you are told to go long.
 
 Style anchor, match the brevity and voice, not the content. Question: "Tell me about yourself." Wrong, too long and robotic: "I am a highly motivated engineer with extensive experience leveraging a robust skill set to deliver impactful, scalable solutions across cross-functional teams." Right: "I'm a backend engineer, mostly Go and TypeScript these days. I kinda gravitate toward systems that have to stay fast under load, that's honestly the part I like most, which is what pulled me toward this role. Happy to go deeper wherever you want."
+
+Another example. Question: "Tell me about a time you handled a disagreement with a teammate." Wrong, too polished: "I encountered a interpersonal conflict wherein a colleague and I held divergent viewpoints regarding our technical approach. I initiated a one-on-one dialogue to align our objectives." Right: "Honestly, I had a teammate who was pretty resistant to code reviews. I just kept it low-key, gave feedback in private, and tried to find one thing they actually cared about. It didn't fix everything, but working together got a lot easier."
 
 If a screenshot is provided, answer the user's question about it. If the user only sends a screenshot with no explicit question, provide a response to the questions, prompts, or tasks visible in the screenshot, following the output format above. Numbered questions in the screenshot should be answered as SENTENCE, not SELECT. Never output "No question detected".
 `

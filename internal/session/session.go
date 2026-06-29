@@ -113,6 +113,11 @@ func (t *Thread) Build(current Turn) []llm.Message {
 			currentText = "screenshot attached"
 		}
 	}
+
+	// Close reminder so the model obeys the spoken-voice rules on this turn,
+	// even when the long system prompt is competing with the question.
+	currentText += "\n\nAnswer in a short, spoken, slightly imperfect voice. If this is a soft, opinion, or experience question, use one or two natural markers like 'kinda' or 'honestly'. If it is a hard fact, number, credential, definition, or code, stay clean and sure."
+
 	msgs = append(msgs, llm.Message{
 		Role:          "user",
 		Text:          currentText,
