@@ -8,12 +8,12 @@ No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
 ## What it does
 
-- **Screen capture** — Press `CMD+H` to grab any region of your screen and attach it to your question.
-- **Voice input** — Press `CMD+L` to transcribe the call app's audio on-device.
-- **Natural answers** — Hermes sends the question plus any screenshots to Groq and streams back a short, human-sounding answer.
-- **Auto-type** — Press `CMD+T` or click the type button; after a visible 5-second countdown, Hermes types the answer into the field you are focused on.
-- **Rate-limit guard** — A small dot on the bar shows when it is safe to send and counts down if you hit a limit.
-- **Resume profile** — Paste a resume or JSON profile so answers sound like they come from you.
+- **Screen capture**: Press `CMD+H` to grab any region of your screen and attach it to your question.
+- **Voice input**: Press `CMD+L` to transcribe the call app's audio on-device.
+- **Natural answers**: Hermes sends the question plus any screenshots to Groq and streams back a short, human-sounding answer.
+- **Auto-type**: Press `CMD+T` or click the type button; after a visible 5-second countdown, Hermes types the answer into the field you are focused on.
+- **Rate-limit guard**: A small dot on the bar shows when it is safe to send and counts down if you hit a limit.
+- **Resume profile**: Paste a resume or JSON profile so answers sound like they come from you.
 
 ---
 
