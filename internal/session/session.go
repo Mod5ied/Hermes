@@ -42,6 +42,11 @@ func NewThread(maxTurns, imageWindow int, systemPrompt string) *Thread {
 	}
 }
 
+// VoiceReminder is appended to the current user turn to nudge the model toward
+// a short, spoken, slightly imperfect voice. It is exported so tests can assert
+// the exact message shape.
+const VoiceReminder = "\n\nAnswer in a short, spoken, slightly imperfect voice. If this is a soft, opinion, or experience question, use one or two natural markers like 'kinda' or 'honestly'. If it is a hard fact, number, credential, definition, or code, stay clean and sure."
+
 // NewThreadFromConfig builds a thread using config values.
 func NewThreadFromConfig(cfg config.Config) *Thread {
 	return NewThread(cfg.ContextTurns, cfg.ImageWindow, llm.SystemPrompt(cfg.ResumeProfile))
@@ -116,7 +121,7 @@ func (t *Thread) Build(current Turn) []llm.Message {
 
 	// Close reminder so the model obeys the spoken-voice rules on this turn,
 	// even when the long system prompt is competing with the question.
-	currentText += "\n\nAnswer in a short, spoken, slightly imperfect voice. If this is a soft, opinion, or experience question, use one or two natural markers like 'kinda' or 'honestly'. If it is a hard fact, number, credential, definition, or code, stay clean and sure."
+	currentText += VoiceReminder
 
 	msgs = append(msgs, llm.Message{
 		Role:          "user",

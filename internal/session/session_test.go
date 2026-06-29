@@ -16,7 +16,7 @@ func TestBuildHistory(t *testing.T) {
 	assert.Equal(t, 6, len(msgs)) // system + 2*(user+assistant) + current
 	assert.Equal(t, "system", msgs[0].Role)
 	assert.Equal(t, "assistant", msgs[2].Role)
-	assert.Equal(t, "q3", msgs[5].Text)
+	assert.Equal(t, "q3"+VoiceReminder, msgs[5].Text)
 }
 
 func TestMaxTurnsTrim(t *testing.T) {
@@ -44,5 +44,5 @@ func TestEmptyInstructionPlaceholder(t *testing.T) {
 	th := NewThread(12, 1, llm.SystemPrompt(""))
 	msgs := th.Build(Turn{ImageDataURLs: []string{"img"}})
 	last := msgs[len(msgs)-1]
-	assert.Equal(t, "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option.", last.Text)
+	assert.Equal(t, "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."+VoiceReminder, last.Text)
 }
