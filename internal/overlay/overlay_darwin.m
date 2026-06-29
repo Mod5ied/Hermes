@@ -872,9 +872,9 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 
         NSRect barFrame = [gPanel frame];
         const CGFloat settingsW = 420.0;
-        const CGFloat settingsH = 340.0;
-        CGFloat sx = barFrame.origin.x - 35.0;
-        CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 25.0;
+        const CGFloat settingsH = 352.0;
+        CGFloat sx = barFrame.origin.x - 65.0;
+        CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 35.0;
         // If there isn't room below the bar, open above it instead.
         if (sy < 0.0) {
             sy = barFrame.origin.y + kBarHeight + 4.0;
