@@ -151,11 +151,12 @@ static NSButton *makeIconButton(NSString *name, NSString *tip, SEL action) {
 }
 
 static NSColor *hermesAmber(void);
+static NSColor *softAmber(void);
 
 static void updateMicButton(void) {
     NSString *name = gListening ? @"mic.fill" : @"mic";
     [gMicButton setImage:sfIcon(name, @"Toggle Listen (CMD+L)")];
-    [gMicButton setContentTintColor:gListening ? hermesAmber() : [NSColor whiteColor]];
+    [gMicButton setContentTintColor:gListening ? softAmber() : [NSColor whiteColor]];
 }
 
 static NSView *makeDot(NSColor *color) {
@@ -168,6 +169,10 @@ static NSView *makeDot(NSColor *color) {
 
 static NSColor *hermesAmber(void) {
     return [NSColor colorWithCalibratedRed:1.0 green:0.65 blue:0.0 alpha:1.0];
+}
+
+static NSColor *softAmber(void) {
+    return [NSColor colorWithCalibratedRed:1.0 green:0.78 blue:0.35 alpha:1.0];
 }
 
 static void updateHistoryButtons(void);
@@ -825,6 +830,31 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
 }
 @end
 
+@interface HermesResumeTextView : NSTextView
+@end
+
+@implementation HermesResumeTextView
+- (void)paste:(id)sender {
+    [super paste:sender];
+    [self formatJSONIfNeeded];
+}
+
+- (void)formatJSONIfNeeded {
+    NSString *raw = [self string];
+    if (raw.length == 0) return;
+    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return;
+    NSError *error = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:&error];
+    if (error || !obj) return;
+    NSError *outError = nil;
+    NSData *pretty = [NSJSONSerialization dataWithJSONObject:obj options:NSJSONWritingPrettyPrinted error:&outError];
+    if (outError || !pretty) return;
+    NSString *formatted = [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding];
+    if (formatted) [self setString:formatted];
+}
+@end
+
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool stealth, bool humanise,
                                int delayMs, const char *resumeProfile, const char *speechLocale) {
     // Copy the C strings immediately: this function is async, and the caller
@@ -842,9 +872,9 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 
         NSRect barFrame = [gPanel frame];
         const CGFloat settingsW = 420.0;
-        const CGFloat settingsH = 420.0;
-        CGFloat sx = barFrame.origin.x;
-        CGFloat sy = barFrame.origin.y - settingsH - 4.0;
+        const CGFloat settingsH = 340.0;
+        CGFloat sx = barFrame.origin.x - 35.0;
+        CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 25.0;
         // If there isn't room below the bar, open above it instead.
         if (sy < 0.0) {
             sy = barFrame.origin.y + kBarHeight + 4.0;
@@ -885,11 +915,19 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
         // Resume box placed just before Save.
         NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(110, y, 280, 80)];
         [scroll setHasVerticalScroller:YES];
-        NSTextView *tv = [[NSTextView alloc] initWithFrame:scroll.bounds];
+        [scroll setWantsLayer:YES];
+        scroll.layer.cornerRadius = 6.0;
+        scroll.layer.masksToBounds = YES;
+        scroll.layer.borderWidth = 1.0;
+        scroll.layer.borderColor = [NSColor colorWithCalibratedWhite:0.25 alpha:1.0].CGColor;
+
+        HermesResumeTextView *tv = [[HermesResumeTextView alloc] initWithFrame:scroll.bounds];
         [tv setString:nsResume];
         [tv setBackgroundColor:[NSColor colorWithCalibratedWhite:0.18 alpha:1.0]];
         [tv setTextColor:[NSColor whiteColor]];
         [tv setFont:[NSFont systemFontOfSize:12]];
+        [tv setTextContainerInset:NSMakeSize(8, 6)];
+        [tv textContainer].lineFragmentPadding = 6.0;
         [scroll setDocumentView:tv];
         [root addSubview:makeLabel(NSMakeRect(20, y + 30, 90, 22), @"Resume:")];
         [root addSubview:scroll];
