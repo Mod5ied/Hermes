@@ -17,3 +17,7 @@
 *.swp
 *.tmp
 .fl*
+
+# Private tech specs (kept local, never committed)
+tech-specs.md
+stature-ravager-psylocke.md
