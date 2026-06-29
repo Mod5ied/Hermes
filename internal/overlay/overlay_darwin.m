@@ -150,9 +150,12 @@ static NSButton *makeIconButton(NSString *name, NSString *tip, SEL action) {
     return btn;
 }
 
+static NSColor *hermesAmber(void);
+
 static void updateMicButton(void) {
     NSString *name = gListening ? @"mic.fill" : @"mic";
     [gMicButton setImage:sfIcon(name, @"Toggle Listen (CMD+L)")];
+    [gMicButton setContentTintColor:gListening ? hermesAmber() : [NSColor whiteColor]];
 }
 
 static NSView *makeDot(NSColor *color) {
@@ -161,6 +164,10 @@ static NSView *makeDot(NSColor *color) {
     v.layer.cornerRadius = 5.0;
     v.layer.backgroundColor = color.CGColor;
     return v;
+}
+
+static NSColor *hermesAmber(void) {
+    return [NSColor colorWithCalibratedRed:1.0 green:0.65 blue:0.0 alpha:1.0];
 }
 
 static void updateHistoryButtons(void);
@@ -811,10 +818,10 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
     [self addTrackingArea:self.trackingArea];
 }
 - (void)mouseEntered:(NSEvent *)event {
-    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.65 alpha:1.0].CGColor;
+    self.layer.backgroundColor = [NSColor colorWithCalibratedRed:1.0 green:0.55 blue:0.0 alpha:1.0].CGColor;
 }
 - (void)mouseExited:(NSEvent *)event {
-    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.75 alpha:1.0].CGColor;
+    self.layer.backgroundColor = hermesAmber().CGColor;
 }
 @end
 
@@ -833,7 +840,16 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
             return;
         }
 
-        NSRect frame = NSMakeRect(200, 200, 420, 420);
+        NSRect barFrame = [gPanel frame];
+        const CGFloat settingsW = 420.0;
+        const CGFloat settingsH = 420.0;
+        CGFloat sx = barFrame.origin.x;
+        CGFloat sy = barFrame.origin.y - settingsH - 4.0;
+        // If there isn't room below the bar, open above it instead.
+        if (sy < 0.0) {
+            sy = barFrame.origin.y + kBarHeight + 4.0;
+        }
+        NSRect frame = NSMakeRect(sx, sy, settingsW, settingsH);
         NSWindow *win = [[NSWindow alloc] initWithContentRect:frame
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                       backing:NSBackingStoreBuffered
@@ -861,7 +877,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
         [save setWantsLayer:YES];
         [save setFont:[NSFont systemFontOfSize:14]];
         [save setContentTintColor:[NSColor blackColor]];
-        save.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.75 alpha:1.0].CGColor;
+        save.layer.backgroundColor = hermesAmber().CGColor;
         save.layer.cornerRadius = 6.0;
         [root addSubview:save];
         y += 42;
