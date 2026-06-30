@@ -51,7 +51,7 @@ func Default() Config {
 		Stealth:      true,
 		Humanise:     true,
 		BaseDelay:    90 * time.Millisecond,
-		ContextTurns: 12,
+		ContextTurns: 4,
 		ImageWindow:  1,
 		SpeechLocale: "",
 	}
@@ -129,7 +129,7 @@ func Load() (Config, error) {
 	}
 	ApplyProviderDefaults(&cfg)
 	if cfg.ContextTurns <= 0 {
-		cfg.ContextTurns = 12
+		cfg.ContextTurns = 4
 	}
 	if cfg.ImageWindow < 0 || cfg.ImageWindow > 5 {
 		cfg.ImageWindow = 1

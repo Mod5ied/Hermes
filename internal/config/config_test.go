@@ -17,7 +17,7 @@ func TestDefault(t *testing.T) {
 	assert.True(t, cfg.Stealth)
 	assert.True(t, cfg.Humanise)
 	assert.Equal(t, 90*time.Millisecond, cfg.BaseDelay)
-	assert.Equal(t, 12, cfg.ContextTurns)
+	assert.Equal(t, 4, cfg.ContextTurns)
 	assert.Equal(t, 1, cfg.ImageWindow)
 }
 

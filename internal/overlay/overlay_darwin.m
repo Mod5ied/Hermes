@@ -18,15 +18,21 @@ static NSTextField *gTrayBadge = nil;
 static NSButton *gMicButton = nil;
 static NSButton *gTypeButton = nil;
 static NSTextField *gTypeBadge = nil;
+static NSButton *gHistoryButton = nil;
+static NSTextField *gPinBadge = nil;
 static NSMutableArray<NSString *> *gAnswerHistory = nil;
 static int gCountdownGeneration = 0;
 static NSInteger gHistoryIndex = -1;
 static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
+static NSButton *gPinButton = nil;
+static NSTextField *gAnswerHeader = nil;
+static NSTextField *gHistoryPosition = nil;
 
 static BOOL gStealth = YES;
 static BOOL gListening = NO;
 static BOOL gGenerating = NO;
+static BOOL gInHistory = NO;
 static NSMutableString *gAnswerBuffer = nil;
 
 static void onMain(void (^block)(void)) {
@@ -218,10 +224,10 @@ void hermesOverlayInit(bool stealth) {
     static const CGFloat kIconGap = 6.0;
     static const CGFloat kInputHeight = 28.0;
 
-    // Five icon buttons (mic, type, capture, clip, gear) with six evenly-sized
-    // gaps around the input field. Compute input width so the bar fills its
-    // frame with no dead space on the right.
-    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 5*kIconSize - 6*kIconGap;
+    // Six icon buttons (mic, type, capture, clip, history, gear) with seven
+    // evenly-sized gaps around the input field. Compute input width so the bar
+    // fills its frame with no dead space on the right.
+    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 6*kIconSize - 7*kIconGap;
 
     CGFloat xpos = kOuterPad;
     CGFloat ypos = (kBarHeight - kIconSize) / 2.0;
@@ -317,6 +323,25 @@ void hermesOverlayInit(bool stealth) {
 
     xpos += kIconSize + kIconGap;
 
+    NSButton *historyBtn = makeIconButton(@"clock", @"History (CMD+Arrows)", @selector(onHistoryEnter:));
+    [historyBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
+    [root addSubview:historyBtn];
+    gHistoryButton = historyBtn;
+    xpos += kIconSize + kIconGap;
+
+    // Pin-count badge sits on top of the history button.
+    gPinBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos - 14, ypos + kIconSize - 13, 16, 14)];
+    [gPinBadge setEditable:NO];
+    [gPinBadge setBordered:NO];
+    [gPinBadge setDrawsBackground:NO];
+    [gPinBadge setTextColor:[NSColor whiteColor]];
+    [gPinBadge setFont:[NSFont boldSystemFontOfSize:10]];
+    [gPinBadge setStringValue:@""];
+    [gPinBadge setAlignment:NSTextAlignmentCenter];
+    [gPinBadge setRefusesFirstResponder:YES];
+    [gPinBadge setHidden:YES];
+    [root addSubview:gPinBadge];
+
     NSButton *gearBtn = makeIconButton(@"gearshape", @"Settings", @selector(onSettings:));
     [gearBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
     [root addSubview:gearBtn];
@@ -363,20 +388,38 @@ void hermesOverlayInit(bool stealth) {
     [header setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
     [header setFont:[NSFont boldSystemFontOfSize:13]];
     [panelBox addSubview:header];
+    gAnswerHeader = header;
+
+    NSTextField *posLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(220, 10, 120, 20)];
+    [posLabel setStringValue:@""];
+    [posLabel setEditable:NO];
+    [posLabel setBordered:NO];
+    [posLabel setDrawsBackground:NO];
+    [posLabel setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
+    [posLabel setFont:[NSFont systemFontOfSize:12]];
+    [posLabel setAlignment:NSTextAlignmentCenter];
+    [posLabel setHidden:YES];
+    [panelBox addSubview:posLabel];
+    gHistoryPosition = posLabel;
 
     // History navigation chevrons, centred on the bottom bar.
-    NSButton *prevBtn = makeIconButton(@"chevron.up", @"Previous answer", @selector(onPrevAnswer:));
+    NSButton *prevBtn = makeIconButton(@"chevron.up", @"Older turn", @selector(onHistoryPrev:));
     [prevBtn setFrame:NSMakeRect((kBarWidth - 56) / 2.0, 8, 24, 24)];
     [prevBtn setContentTintColor:[NSColor colorWithCalibratedRed:1.0 green:0.7 blue:0.0 alpha:1.0]];
     [panelBox addSubview:prevBtn];
     gPrevAnswerBtn = prevBtn;
 
-    NSButton *nextBtn = makeIconButton(@"chevron.down", @"Next answer", @selector(onNextAnswer:));
+    NSButton *nextBtn = makeIconButton(@"chevron.down", @"Newer turn", @selector(onHistoryNext:));
     [nextBtn setFrame:NSMakeRect((kBarWidth - 56) / 2.0 + 32, 8, 24, 24)];
     [panelBox addSubview:nextBtn];
     gNextAnswerBtn = nextBtn;
 
-    updateHistoryButtons();
+    NSButton *pinBtn = makeIconButton(@"pin", @"Pin / Unpin (CMD+P)", @selector(onPinToggle:));
+    [pinBtn setFrame:NSMakeRect((kBarWidth - 56) / 2.0 + 68, 8, 24, 24)];
+    [pinBtn setContentTintColor:[NSColor whiteColor]];
+    [pinBtn setHidden:YES];
+    [panelBox addSubview:pinBtn];
+    gPinButton = pinBtn;
 
     NSButton *copyBtn = makeIconButton(@"doc.on.doc", @"Copy response", @selector(onCopyAnswer:));
     [copyBtn setFrame:NSMakeRect(kBarWidth - 74, 8, 24, 24)];
@@ -549,7 +592,7 @@ static NSAttributedString *formatAnswerText(NSString *text) {
 }
 
 static void refreshAnswerDisplay(void) {
-    if (!gAnswer) return;
+    if (!gAnswer || gInHistory) return;
     [[gAnswer textStorage] setAttributedString:formatAnswerText(gAnswerBuffer)];
 }
 
@@ -679,6 +722,87 @@ void hermesOverlaySetTrayCount(int n) {
 void hermesOverlaySetAnswerCount(int n) {
     // Answer counter removed; kept as a no-op for ABI compatibility.
     (void)n;
+}
+
+static void updatePinButton(bool pinned) {
+    if (!gPinButton) return;
+    NSString *name = pinned ? @"pin.fill" : @"pin";
+    [gPinButton setImage:sfIcon(name, @"Pin / Unpin (CMD+P)")];
+}
+
+void hermesOverlayEnterHistory(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gInHistory = YES;
+        if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
+        if (gHistoryPosition) [gHistoryPosition setHidden:NO];
+        if (gPinButton) [gPinButton setHidden:NO];
+        showAnswerWindow();
+    });
+}
+
+void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, bool pinned) {
+    if (!question || !answerPreview) return;
+    NSString *q = [NSString stringWithUTF8String:question];
+    NSString *a = [NSString stringWithUTF8String:answerPreview];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gInHistory) {
+            gInHistory = YES;
+            if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
+            if (gHistoryPosition) [gHistoryPosition setHidden:NO];
+            if (gPinButton) [gPinButton setHidden:NO];
+        }
+        if (gHistoryPosition) {
+            [gHistoryPosition setStringValue:[NSString stringWithFormat:@"%d / %d", index + 1, total]];
+        }
+        if (gAnswer) {
+            [[gAnswer textStorage] setAttributedString:formatAnswerText(a)];
+        }
+        updatePinButton(pinned);
+        showAnswerWindow();
+    });
+}
+
+void hermesOverlaySetItemPinned(int index, bool pinned) {
+    (void)index;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        updatePinButton(pinned);
+    });
+}
+
+void hermesOverlaySetPinnedBadge(int n) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gPinBadge) return;
+        [gPinBadge setStringValue:n > 0 ? [NSString stringWithFormat:@"%d", n] : @""];
+        [gPinBadge setHidden:(n == 0)];
+    });
+}
+
+void hermesOverlayFlash(const char *msg) {
+    if (!msg) return;
+    NSString *s = [NSString stringWithUTF8String:msg];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gCountdown) return;
+        [gCountdown setStringValue:s];
+        [gCountdown setHidden:NO];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!gInHistory) [gCountdown setHidden:YES];
+            [gCountdown setStringValue:@""];
+        });
+    });
+}
+
+void hermesOverlayExitHistory(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gInHistory = NO;
+        if (gAnswerHeader) [gAnswerHeader setStringValue:@"Hermes"];
+        if (gHistoryPosition) {
+            [gHistoryPosition setStringValue:@""];
+            [gHistoryPosition setHidden:YES];
+        }
+        if (gPinButton) [gPinButton setHidden:YES];
+        if (gCountdown) [gCountdown setHidden:YES];
+        refreshAnswerDisplay();
+    });
 }
 
 static void restoreTypeButton(void) {
@@ -996,13 +1120,14 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onMic:(id)sender;
 - (void)onType:(id)sender;
 - (void)onTray:(id)sender;
-- (void)onHistory:(id)sender;
+- (void)onHistoryEnter:(id)sender;
+- (void)onHistoryPrev:(id)sender;
+- (void)onHistoryNext:(id)sender;
+- (void)onPinToggle:(id)sender;
 - (void)onNewSession:(id)sender;
 - (void)onSettings:(id)sender;
 - (void)onCloseAnswer:(id)sender;
 - (void)onCopyAnswer:(id)sender;
-- (void)onPrevAnswer:(id)sender;
-- (void)onNextAnswer:(id)sender;
 - (void)onSettingsSave:(id)sender;
 @end
 
@@ -1014,6 +1139,10 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
     hermesOverlayOnSend();
 }
 - (void)onInputSend:(id)sender {
+    if (gInHistory) {
+        hermesOverlayOnHistoryExit();
+        return;
+    }
     hermesOverlayOnSend();
 }
 - (void)onMic:(id)sender {
@@ -1027,8 +1156,17 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onTray:(id)sender {
     // Tray management UI could open here.
 }
-- (void)onHistory:(id)sender {
-    // History panel could open here.
+- (void)onHistoryEnter:(id)sender {
+    hermesOverlayOnHistoryEnter();
+}
+- (void)onHistoryPrev:(id)sender {
+    hermesOverlayOnHistoryPrev();
+}
+- (void)onHistoryNext:(id)sender {
+    hermesOverlayOnHistoryNext();
+}
+- (void)onPinToggle:(id)sender {
+    hermesOverlayOnPinToggle();
 }
 - (void)onNewSession:(id)sender {
     hermesOverlayOnNewSession();
@@ -1037,6 +1175,10 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
     hermesOverlayOnSettings();
 }
 - (void)onCloseAnswer:(id)sender {
+    if (gInHistory) {
+        hermesOverlayOnHistoryExit();
+        return;
+    }
     hideAnswerWindow();
 }
 - (void)onCopyAnswer:(id)sender {
@@ -1044,12 +1186,6 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
     [pb setString:gAnswerBuffer forType:NSPasteboardTypeString];
-}
-- (void)onPrevAnswer:(id)sender {
-    showHistoryAnswer(gHistoryIndex - 1);
-}
-- (void)onNextAnswer:(id)sender {
-    showHistoryAnswer(gHistoryIndex + 1);
 }
 - (void)onSettingsSave:(id)sender {
     if (!gSettingsWindow) return;

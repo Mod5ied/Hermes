@@ -2,6 +2,8 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/hermes/hermes/internal/config"
@@ -22,12 +24,14 @@ type Thread struct {
 	maxTurns     int
 	imageWindow  int
 	systemPrompt string
+	manualPins   []int // user-pinned turn indices, cap 2
+	autoPin      int   // index of most recent CODE answer, or -1
 }
 
 // NewThread creates a thread with the given context limits.
 func NewThread(maxTurns, imageWindow int, systemPrompt string) *Thread {
 	if maxTurns <= 0 {
-		maxTurns = 12
+		maxTurns = 4
 	}
 	if imageWindow < 0 {
 		imageWindow = 0
@@ -39,6 +43,8 @@ func NewThread(maxTurns, imageWindow int, systemPrompt string) *Thread {
 		maxTurns:     maxTurns,
 		imageWindow:  imageWindow,
 		systemPrompt: systemPrompt,
+		manualPins:   nil,
+		autoPin:      -1,
 	}
 }
 
@@ -59,46 +65,130 @@ func (t *Thread) SystemPrompt() string {
 	return t.systemPrompt
 }
 
+// effectivePinsLocked returns the effective pin indices, oldest-first, deduped,
+// capped at 2. Manual pins are preferred over the auto-pin when over the cap.
+func (t *Thread) effectivePinsLocked() []int {
+	var pins []int
+	for _, p := range t.manualPins {
+		if p >= 0 && p < len(t.turns) {
+			pins = append(pins, p)
+		}
+	}
+	if t.autoPin >= 0 && t.autoPin < len(t.turns) {
+		found := false
+		for _, p := range pins {
+			if p == t.autoPin {
+				found = true
+				break
+			}
+		}
+		if !found {
+			pins = append(pins, t.autoPin)
+		}
+	}
+	if len(pins) > 2 {
+		pins = pins[:2]
+	}
+	return pins
+}
+
+// TogglePin adds or removes a manual pin. It returns the new pinned state and
+// false if adding would exceed the cap of 2.
+func (t *Thread) TogglePin(i int) (pinned bool, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if i < 0 || i >= len(t.turns) {
+		return false, false
+	}
+
+	for idx, p := range t.manualPins {
+		if p == i {
+			t.manualPins = append(t.manualPins[:idx], t.manualPins[idx+1:]...)
+			return false, true
+		}
+	}
+
+	if len(t.effectivePinsLocked()) >= 2 {
+		return false, false
+	}
+	t.manualPins = append(t.manualPins, i)
+	return true, true
+}
+
+// SetAutoPin records the most recent CODE-answer turn. Pass -1 to clear.
+func (t *Thread) SetAutoPin(i int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.autoPin = i
+}
+
+// IsPinned reports whether index i is in the effective pin set.
+func (t *Thread) IsPinned(i int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, p := range t.effectivePinsLocked() {
+		if p == i {
+			return true
+		}
+	}
+	return false
+}
+
+// PinnedCount returns the size of the effective pin set (deduped, capped at 2).
+func (t *Thread) PinnedCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.effectivePinsLocked())
+}
+
 // Build creates the message list for the current turn, including trimmed history.
 func (t *Thread) Build(current Turn) []llm.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	var msgs []llm.Message
-	msgs = append(msgs, llm.Message{Role: "system", Text: t.systemPrompt})
+	pins := t.effectivePinsLocked()
+	pinSet := make(map[int]bool, len(pins))
+	for _, p := range pins {
+		pinSet[p] = true
+	}
 
-	// Trim oldest turns if over budget.
+	// System message, with the pinned REFERENCE appended.
+	systemContent := t.systemPrompt
+	if len(pins) > 0 {
+		systemContent += "\n\n" + buildReferenceBlock(t.turns, pins)
+	}
+	msgs := []llm.Message{{Role: "system", Text: systemContent}}
+
+	// Recency window: last maxTurns turns, skipping any pinned index.
 	start := 0
 	if len(t.turns) > t.maxTurns {
 		start = len(t.turns) - t.maxTurns
 	}
-
-	for _, turn := range t.turns[start:] {
+	for i := start; i < len(t.turns); i++ {
+		if pinSet[i] {
+			continue
+		}
+		turn := t.turns[i]
 		userText := turn.Instruction
 		if userText == "" {
 			userText = "screenshot attached"
 		}
-		msgs = append(msgs, llm.Message{
-			Role: "user",
-			Text: userText,
-		})
-		msgs = append(msgs, llm.Message{
-			Role: "assistant",
-			Text: turn.Answer,
-		})
+		msgs = append(msgs,
+			llm.Message{Role: "user", Text: userText},
+			llm.Message{Role: "assistant", Text: turn.Answer},
+		)
 	}
 
 	// Current turn: include the image window of most recent screenshots.
 	var images []string
 	if t.imageWindow > 0 && len(t.turns) > 0 {
-		// Include recent images from history up to imageWindow-1, then current turn's images.
 		window := []string{}
 		for i := len(t.turns) - 1; i >= 0 && len(window) < t.imageWindow-1; i-- {
 			for j := len(t.turns[i].ImageDataURLs) - 1; j >= 0 && len(window) < t.imageWindow-1; j-- {
 				window = append([]string{t.turns[i].ImageDataURLs[j]}, window...)
 			}
 		}
-		// Append current turn images, then prepend historical window.
 		images = append(window, current.ImageDataURLs...)
 		if len(images) > t.imageWindow {
 			images = images[len(images)-t.imageWindow:]
@@ -132,6 +222,26 @@ func (t *Thread) Build(current Turn) []llm.Message {
 	return msgs
 }
 
+func buildReferenceBlock(turns []Turn, pins []int) string {
+	var b strings.Builder
+	b.WriteString("REFERENCE (pinned by the user). This is the canonical code or answer you are ")
+	b.WriteString("iterating on. When the current question asks to change, extend, fix, or build on ")
+	b.WriteString("it, modify this exact code and keep its names and structure. Do not rewrite it ")
+	b.WriteString("from scratch or invent a different version. If the current question is unrelated, ")
+	b.WriteString("ignore this section.")
+	for n, idx := range pins {
+		if idx < 0 || idx >= len(turns) {
+			continue
+		}
+		q := turns[idx].Instruction
+		if q == "" {
+			q = "(problem shown in a screenshot)"
+		}
+		fmt.Fprintf(&b, "\n[%d] Question: %s\nAnswer:\n%s\n", n+1, q, turns[idx].Answer)
+	}
+	return b.String()
+}
+
 // Commit appends the completed current turn to the thread.
 func (t *Thread) Commit(current Turn) {
 	t.mu.Lock()
@@ -139,11 +249,13 @@ func (t *Thread) Commit(current Turn) {
 	t.turns = append(t.turns, current)
 }
 
-// Clear wipes the thread.
+// Clear wipes the thread and all pins.
 func (t *Thread) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.turns = t.turns[:0]
+	t.manualPins = t.manualPins[:0]
+	t.autoPin = -1
 }
 
 // Len returns the number of completed turns.

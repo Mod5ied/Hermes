@@ -14,6 +14,7 @@ const (
 	Send         = "cmd+enter"
 	TypeAnswer   = "cmd+t"
 	ToggleListen = "cmd+l"
+	PinToggle    = "cmd+p"
 	Cancel       = "esc"
 	MoveLeft     = "cmd+left"
 	MoveRight    = "cmd+right"
@@ -80,6 +81,8 @@ func parseCombo(combo string) ([]hotkey.Modifier, hotkey.Key, error) {
 			key = hotkey.KeyT
 		case "l":
 			key = hotkey.KeyL
+		case "p":
+			key = hotkey.KeyP
 		case "left":
 			key = hotkey.KeyLeft
 		case "right":

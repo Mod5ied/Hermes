@@ -28,6 +28,12 @@ void hermesOverlayRun(void);
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
 void hermesOverlayHideSettings(void);
 void hermesOverlayMove(int dx, int dy);
+void hermesOverlayEnterHistory(void);
+void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, bool pinned);
+void hermesOverlaySetItemPinned(int index, bool pinned);
+void hermesOverlaySetPinnedBadge(int n);
+void hermesOverlayFlash(const char *msg);
+void hermesOverlayExitHistory(void);
 */
 import "C"
 import (
@@ -59,6 +65,17 @@ type Overlay interface {
 	OnType(handler func())
 	OnTypeReady(handler func())
 	OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
+	OnHistoryEnter(handler func())
+	OnHistoryPrev(handler func())
+	OnHistoryNext(handler func())
+	OnPinToggle(handler func())
+	OnHistoryExit(handler func())
+	EnterHistory()
+	ExitHistory()
+	ShowHistoryItem(index, total int, question, answerPreview string, pinned bool)
+	SetItemPinned(index int, pinned bool)
+	SetPinnedBadge(n int)
+	Flash(msg string)
 	Show()
 	Hide()
 	Move(dx, dy int)
@@ -92,6 +109,11 @@ type nativeOverlay struct {
 	onType         func()
 	onTypeReady    func()
 	onSettingsSaved func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onHistoryEnter func()
+	onHistoryPrev  func()
+	onHistoryNext  func()
+	onPinToggle    func()
+	onHistoryExit  func()
 }
 
 func (o *nativeOverlay) BeginAnswer() {
@@ -185,6 +207,56 @@ func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, provider string, st
 	o.onSettingsSaved = handler
 }
 
+func (o *nativeOverlay) OnHistoryEnter(handler func()) {
+	o.onHistoryEnter = handler
+}
+
+func (o *nativeOverlay) OnHistoryPrev(handler func()) {
+	o.onHistoryPrev = handler
+}
+
+func (o *nativeOverlay) OnHistoryNext(handler func()) {
+	o.onHistoryNext = handler
+}
+
+func (o *nativeOverlay) OnPinToggle(handler func()) {
+	o.onPinToggle = handler
+}
+
+func (o *nativeOverlay) OnHistoryExit(handler func()) {
+	o.onHistoryExit = handler
+}
+
+func (o *nativeOverlay) EnterHistory() {
+	C.hermesOverlayEnterHistory()
+}
+
+func (o *nativeOverlay) ExitHistory() {
+	C.hermesOverlayExitHistory()
+}
+
+func (o *nativeOverlay) ShowHistoryItem(index, total int, question, answerPreview string, pinned bool) {
+	cQuestion := C.CString(question)
+	cPreview := C.CString(answerPreview)
+	defer C.free(unsafe.Pointer(cQuestion))
+	defer C.free(unsafe.Pointer(cPreview))
+	C.hermesOverlayShowHistoryItem(C.int(index), C.int(total), cQuestion, cPreview, C.bool(pinned))
+}
+
+func (o *nativeOverlay) SetItemPinned(index int, pinned bool) {
+	C.hermesOverlaySetItemPinned(C.int(index), C.bool(pinned))
+}
+
+func (o *nativeOverlay) SetPinnedBadge(n int) {
+	C.hermesOverlaySetPinnedBadge(C.int(n))
+}
+
+func (o *nativeOverlay) Flash(msg string) {
+	c := C.CString(msg)
+	defer C.free(unsafe.Pointer(c))
+	C.hermesOverlayFlash(c)
+}
+
 func (o *nativeOverlay) Show() {
 	C.hermesOverlayShow()
 }
@@ -264,6 +336,41 @@ func hermesOverlayOnType() {
 func hermesOverlayOnTypeReady() {
 	if currentOverlay != nil && currentOverlay.onTypeReady != nil {
 		currentOverlay.onTypeReady()
+	}
+}
+
+//export hermesOverlayOnHistoryEnter
+func hermesOverlayOnHistoryEnter() {
+	if currentOverlay != nil && currentOverlay.onHistoryEnter != nil {
+		currentOverlay.onHistoryEnter()
+	}
+}
+
+//export hermesOverlayOnHistoryPrev
+func hermesOverlayOnHistoryPrev() {
+	if currentOverlay != nil && currentOverlay.onHistoryPrev != nil {
+		currentOverlay.onHistoryPrev()
+	}
+}
+
+//export hermesOverlayOnHistoryNext
+func hermesOverlayOnHistoryNext() {
+	if currentOverlay != nil && currentOverlay.onHistoryNext != nil {
+		currentOverlay.onHistoryNext()
+	}
+}
+
+//export hermesOverlayOnPinToggle
+func hermesOverlayOnPinToggle() {
+	if currentOverlay != nil && currentOverlay.onPinToggle != nil {
+		currentOverlay.onPinToggle()
+	}
+}
+
+//export hermesOverlayOnHistoryExit
+func hermesOverlayOnHistoryExit() {
+	if currentOverlay != nil && currentOverlay.onHistoryExit != nil {
+		currentOverlay.onHistoryExit()
 	}
 }
 

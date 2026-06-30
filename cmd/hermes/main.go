@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,6 +59,49 @@ func run() {
 	var answerBuffer string
 	var typing bool
 	var listening bool
+	var selectedHistory int = -1 // index into thread turns while reviewing history
+
+	previewText := func(text string) string {
+		text = strings.TrimSpace(text)
+		if len(text) <= 300 {
+			return text
+		}
+		return text[:300] + "..."
+	}
+
+	moveHistory := func(delta int) {
+		turns := thread.Turns()
+		if len(turns) == 0 {
+			selectedHistory = -1
+			return
+		}
+		selectedHistory += delta
+		if selectedHistory < 0 {
+			selectedHistory = 0
+		}
+		if selectedHistory >= len(turns) {
+			selectedHistory = len(turns) - 1
+		}
+		turn := turns[selectedHistory]
+		question := turn.Instruction
+		if question == "" {
+			question = "(screenshot)"
+		}
+		ovl.ShowHistoryItem(selectedHistory, len(turns), question, previewText(turn.Answer), thread.IsPinned(selectedHistory))
+	}
+
+	togglePin := func() {
+		if selectedHistory < 0 {
+			return
+		}
+		pinned, ok := thread.TogglePin(selectedHistory)
+		if !ok {
+			ovl.Flash("Pin limit is 2")
+			return
+		}
+		ovl.SetItemPinned(selectedHistory, pinned)
+		ovl.SetPinnedBadge(thread.PinnedCount())
+	}
 
 	updateIndicator := func() {
 		if cfg.APIKey == "" {
@@ -159,8 +203,12 @@ func run() {
 
 			current.Answer = answer.Text
 			thread.Commit(current)
+			if answer.Type == llm.Code {
+				thread.SetAutoPin(thread.Len() - 1)
+			}
 			answerBuffer = answer.Text
 			ovl.FinalizeAnswer(answer)
+			ovl.SetPinnedBadge(thread.PinnedCount())
 			ovl.SetAnswerCount(thread.Len())
 			tray.Clear()
 			ovl.SetTrayCount(0)
@@ -195,9 +243,12 @@ func run() {
 	ovl.OnNewSession(func() {
 		thread.Clear()
 		answerBuffer = ""
+		selectedHistory = -1
 		tray.Clear()
 		ovl.SetTrayCount(0)
 		ovl.SetInstruction("", false)
+		ovl.SetPinnedBadge(0)
+		ovl.ExitHistory()
 		transcriber.Reset()
 	})
 	ovl.OnListenToggle(func(on bool) {
@@ -231,6 +282,14 @@ func run() {
 			typing = false
 		}
 	})
+	ovl.OnHistoryEnter(func() {
+		selectedHistory = -1
+		moveHistory(+1) // select most recent turn
+	})
+	ovl.OnHistoryPrev(func() { moveHistory(-1) })
+	ovl.OnHistoryNext(func() { moveHistory(+1) })
+	ovl.OnPinToggle(togglePin)
+	ovl.OnHistoryExit(func() { selectedHistory = -1 })
 
 	// Hotkeys — register off the main goroutine. golang.design/x/hotkey
 	// internally dispatch_sync()s to the main queue to install its event tap.
@@ -253,6 +312,7 @@ func run() {
 			listening = !listening
 			doListenToggle(listening)
 		})
+		register(hotkey.PinToggle, togglePin)
 		register(hotkey.Cancel, cancelAll)
 		const step = 20
 		register(hotkey.MoveLeft, func() { ovl.Move(-step, 0) })
