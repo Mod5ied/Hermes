@@ -20,9 +20,7 @@ static NSButton *gTypeButton = nil;
 static NSTextField *gTypeBadge = nil;
 static NSButton *gHistoryButton = nil;
 static NSTextField *gPinBadge = nil;
-static NSMutableArray<NSString *> *gAnswerHistory = nil;
 static int gCountdownGeneration = 0;
-static NSInteger gHistoryIndex = -1;
 static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
 static NSButton *gPinButton = nil;
@@ -181,16 +179,13 @@ static NSColor *softAmber(void) {
     return [NSColor colorWithCalibratedRed:1.0 green:0.78 blue:0.35 alpha:1.0];
 }
 
-static void updateHistoryButtons(void);
-static void showHistoryAnswer(NSInteger idx);
+
 
 void hermesOverlayInit(bool stealth) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     gStealth = stealth ? YES : NO;
     gAnswerBuffer = [NSMutableString string];
-    gAnswerHistory = [NSMutableArray array];
-    gHistoryIndex = -1;
 
     NSRect screen = [[NSScreen mainScreen] frame];
     CGFloat x = (NSWidth(screen) - kBarWidth) / 2.0;
@@ -596,20 +591,6 @@ static void refreshAnswerDisplay(void) {
     [[gAnswer textStorage] setAttributedString:formatAnswerText(gAnswerBuffer)];
 }
 
-static void updateHistoryButtons(void) {
-    if (!gPrevAnswerBtn || !gNextAnswerBtn) return;
-    [gPrevAnswerBtn setEnabled:(gHistoryIndex > 0)];
-    [gNextAnswerBtn setEnabled:(gHistoryIndex >= 0 && gHistoryIndex < (NSInteger)[gAnswerHistory count] - 1)];
-}
-
-static void showHistoryAnswer(NSInteger idx) {
-    if (!gAnswerHistory || idx < 0 || idx >= (NSInteger)[gAnswerHistory count]) return;
-    gHistoryIndex = idx;
-    [gAnswerBuffer setString:gAnswerHistory[idx]];
-    refreshAnswerDisplay();
-    updateHistoryButtons();
-}
-
 void hermesOverlayBeginAnswer(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         fprintf(stderr, "Hermes: BeginAnswer on main thread, gPanel=%p gAnswerWindow=%p\n",
@@ -652,16 +633,9 @@ void hermesOverlayFinalizeAnswer(const char *text) {
         [gSpinner setHidden:YES];
         refreshAnswerDisplay();
 
-        if (gAnswerHistory) {
-            [gAnswerHistory addObject:[s copy]];
-            gHistoryIndex = (NSInteger)[gAnswerHistory count] - 1;
-            updateHistoryButtons();
-        }
-
-        fprintf(stderr, "Hermes: FinalizeAnswer visible=%d frame=%s history=%zu\n",
+        fprintf(stderr, "Hermes: FinalizeAnswer visible=%d frame=%s\n",
                 [gAnswerWindow isVisible] ? 1 : 0,
-                [NSStringFromRect([gAnswerWindow frame]) UTF8String],
-                (size_t)[gAnswerHistory count]);
+                [NSStringFromRect([gAnswerWindow frame]) UTF8String]);
     });
 }
 
@@ -758,6 +732,8 @@ void hermesOverlayShowHistoryItem(int index, int total, const char *question, co
             [[gAnswer textStorage] setAttributedString:formatAnswerText(a)];
         }
         updatePinButton(pinned);
+        if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:(index > 0)];
+        if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:(index < total - 1)];
         showAnswerWindow();
     });
 }
@@ -801,6 +777,8 @@ void hermesOverlayExitHistory(void) {
         }
         if (gPinButton) [gPinButton setHidden:YES];
         if (gCountdown) [gCountdown setHidden:YES];
+        if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:NO];
+        if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:NO];
         refreshAnswerDisplay();
     });
 }
@@ -1141,6 +1119,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onInputSend:(id)sender {
     if (gInHistory) {
         hermesOverlayOnHistoryExit();
+        hermesOverlayOnSend();
         return;
     }
     hermesOverlayOnSend();
@@ -1177,6 +1156,8 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onCloseAnswer:(id)sender {
     if (gInHistory) {
         hermesOverlayOnHistoryExit();
+        hermesOverlayExitHistory();
+        hideAnswerWindow();
         return;
     }
     hideAnswerWindow();

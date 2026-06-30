@@ -69,6 +69,20 @@ func run() {
 		return text[:300] + "..."
 	}
 
+	showCurrentHistory := func() {
+		turns := thread.Turns()
+		if len(turns) == 0 || selectedHistory < 0 || selectedHistory >= len(turns) {
+			selectedHistory = -1
+			return
+		}
+		turn := turns[selectedHistory]
+		question := turn.Instruction
+		if question == "" {
+			question = "(screenshot)"
+		}
+		ovl.ShowHistoryItem(selectedHistory, len(turns), question, previewText(turn.Answer), thread.IsPinned(selectedHistory))
+	}
+
 	moveHistory := func(delta int) {
 		turns := thread.Turns()
 		if len(turns) == 0 {
@@ -82,12 +96,7 @@ func run() {
 		if selectedHistory >= len(turns) {
 			selectedHistory = len(turns) - 1
 		}
-		turn := turns[selectedHistory]
-		question := turn.Instruction
-		if question == "" {
-			question = "(screenshot)"
-		}
-		ovl.ShowHistoryItem(selectedHistory, len(turns), question, previewText(turn.Answer), thread.IsPinned(selectedHistory))
+		showCurrentHistory()
 	}
 
 	togglePin := func() {
@@ -120,40 +129,45 @@ func run() {
 	}
 
 	doCapture := func() {
-		cancelAll()
-		// Always let the user select the area. The previously saved region is
-		// passed as the starting seed so the last selection is pre-selected.
-		seed := capture.Rect{}
-		if cfg.Region != nil {
-			seed = capture.Rect{X: cfg.Region.X, Y: cfg.Region.Y, W: cfg.Region.W, H: cfg.Region.H}
-		}
-		r, ok, err := capture.SelectRegion(seed)
-		if err != nil {
-			log.Printf("select region: %v", err)
-			return
-		}
-		if !ok {
-			return
-		}
-		region := &config.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}
-		cfg.Region = region
-		_ = config.Save(cfg)
+		// Capture creates AppKit windows and pumps events, so it cannot run on
+		// the main thread (the UI action / hotkey callback may already be on the
+		// main thread). Offload the whole flow to a background goroutine.
+		go func() {
+			cancelAll()
+			// Always let the user select the area. The previously saved region is
+			// passed as the starting seed so the last selection is pre-selected.
+			seed := capture.Rect{}
+			if cfg.Region != nil {
+				seed = capture.Rect{X: cfg.Region.X, Y: cfg.Region.Y, W: cfg.Region.W, H: cfg.Region.H}
+			}
+			r, ok, err := capture.SelectRegion(seed)
+			if err != nil {
+				log.Printf("select region: %v", err)
+				return
+			}
+			if !ok {
+				return
+			}
+			region := &config.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}
+			cfg.Region = region
+			_ = config.Save(cfg)
 
-		img, err := capture.CaptureImage(capture.Rect{X: region.X, Y: region.Y, W: region.W, H: region.H})
-		if err != nil {
-			log.Printf("capture: %v", err)
-			return
-		}
-		dataURL, err := capture.EncodeForGroq(img)
-		if err != nil {
-			log.Printf("encode: %v", err)
-			return
-		}
-		if _, err := tray.Add(dataURL); err != nil {
-			log.Printf("tray: %v", err)
-			return
-		}
-		ovl.SetTrayCount(tray.Count())
+			img, err := capture.CaptureImage(capture.Rect{X: region.X, Y: region.Y, W: region.W, H: region.H})
+			if err != nil {
+				log.Printf("capture: %v", err)
+				return
+			}
+			dataURL, err := capture.EncodeForGroq(img)
+			if err != nil {
+				log.Printf("encode: %v", err)
+				return
+			}
+			if _, err := tray.Add(dataURL); err != nil {
+				log.Printf("tray: %v", err)
+				return
+			}
+			ovl.SetTrayCount(tray.Count())
+		}()
 	}
 
 	doSend := func() {
@@ -283,13 +297,21 @@ func run() {
 		}
 	})
 	ovl.OnHistoryEnter(func() {
-		selectedHistory = -1
-		moveHistory(+1) // select most recent turn
+		turns := thread.Turns()
+		if len(turns) == 0 {
+			selectedHistory = -1
+			return
+		}
+		selectedHistory = len(turns) - 1
+		showCurrentHistory()
 	})
 	ovl.OnHistoryPrev(func() { moveHistory(-1) })
 	ovl.OnHistoryNext(func() { moveHistory(+1) })
 	ovl.OnPinToggle(togglePin)
-	ovl.OnHistoryExit(func() { selectedHistory = -1 })
+	ovl.OnHistoryExit(func() {
+		selectedHistory = -1
+		ovl.ExitHistory()
+	})
 
 	// Hotkeys — register off the main goroutine. golang.design/x/hotkey
 	// internally dispatch_sync()s to the main queue to install its event tap.
