@@ -2,6 +2,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <ctype.h>
 #include "_cgo_export.h"
 
 static NSPanel *gPanel = nil;
@@ -9,6 +10,7 @@ static NSPanel *gAnswerWindow = nil;
 static NSWindow *gSettingsWindow;
 static NSTextField *gInput = nil;
 static NSTextView *gAnswer = nil;
+static NSScrollView *gAnswerScroll = nil;
 static NSBox *gAnswerPanel = nil;
 static NSTextField *gCountdown = nil;
 static NSTextField *gModelNote = nil;
@@ -27,13 +29,26 @@ static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
 static NSButton *gPinButton = nil;
 static NSTextField *gAnswerHeader = nil;
+static NSTextField *gCodeTag = nil;
 static NSTextField *gHistoryPosition = nil;
 
 static BOOL gStealth = YES;
 static BOOL gListening = NO;
 static BOOL gGenerating = NO;
 static BOOL gInHistory = NO;
+static NSInteger gAnswerType = 0;
+static NSInteger gSavedAnswerType = 0;
+static NSString *gSavedAnswerBuffer = nil;
+
+static NSColor *hexColor(uint32_t rgb);
 static NSMutableString *gAnswerBuffer = nil;
+
+enum {
+    AnswerTypeNone = 0,
+    AnswerTypeSelect = 1,
+    AnswerTypeSentence = 2,
+    AnswerTypeCode = 3
+};
 
 static void onMain(void (^block)(void)) {
     if ([NSThread isMainThread]) block();
@@ -402,6 +417,17 @@ void hermesOverlayInit(bool stealth) {
     [panelBox addSubview:header];
     gAnswerHeader = header;
 
+    NSTextField *codeTag = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 80, 20)];
+    [codeTag setStringValue:@"code"];
+    [codeTag setEditable:NO];
+    [codeTag setBordered:NO];
+    [codeTag setDrawsBackground:NO];
+    [codeTag setTextColor:hexColor(0x808080)];
+    [codeTag setFont:[NSFont systemFontOfSize:10]];
+    [codeTag setHidden:YES];
+    [panelBox addSubview:codeTag];
+    gCodeTag = codeTag;
+
     NSTextField *posLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(220, 10, 120, 20)];
     [posLabel setStringValue:@""];
     [posLabel setEditable:NO];
@@ -446,6 +472,7 @@ void hermesOverlayInit(bool stealth) {
     [scroll setAutohidesScrollers:YES];
     [scroll setScrollerStyle:NSScrollerStyleOverlay];
     [scroll setBorderType:NSBezelBorder];
+    gAnswerScroll = scroll;
 
     NSTextView *tv = [[NSTextView alloc] initWithFrame:scroll.bounds];
     [tv setEditable:NO];
@@ -561,25 +588,249 @@ void hermesOverlayFreeString(char *s) {
     if (s) free(s);
 }
 
-static NSAttributedString *formatAnswerText(NSString *text) {
-    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
-    NSFont *bodyFont = [NSFont systemFontOfSize:10];
-    NSFont *codeFont = [NSFont userFixedPitchFontOfSize:9];
-    NSColor *bodyColor = [NSColor whiteColor];
-    NSColor *codeColor = [NSColor colorWithCalibratedWhite:0.85 alpha:1.0];
-    NSColor *codeBg = [NSColor colorWithCalibratedWhite:0.15 alpha:1.0];
+static NSColor *hexColor(uint32_t rgb) {
+    return [NSColor colorWithCalibratedRed:((rgb >> 16) & 0xFF) / 255.0
+                                     green:((rgb >> 8) & 0xFF) / 255.0
+                                      blue:(rgb & 0xFF) / 255.0
+                                     alpha:1.0];
+}
 
-    // Split on markdown code fences and style odd segments as code blocks.
+static NSFont *codeFont(void) {
+    NSFont *f = [NSFont fontWithName:@"SF Mono" size:10.5];
+    if (!f) f = [NSFont fontWithName:@"Menlo" size:10.5];
+    if (!f) f = [NSFont userFixedPitchFontOfSize:10.5];
+    return f;
+}
+
+static NSSet *keywordSet(void) {
+    static NSSet *set = nil;
+    if (!set) {
+        set = [[NSSet alloc] initWithObjects:
+            @"func", @"def", @"function", @"class", @"struct", @"var", @"let", @"const",
+            @"return", @"if", @"else", @"for", @"package", @"import", @"from", @"public",
+            @"private", @"static", @"void", @"int", @"string", @"bool", @"true", @"false",
+            @"nil", @"null", @"try", @"catch", @"except", @"finally", @"async", @"await",
+            @"go", @"defer", @"interface", @"enum", @"case", @"switch", @"break", @"continue",
+            @"while", @"do", @"in", @"as", @"is", @"not", @"and", @"or", @"xor", @"typeof",
+            @"new", @"this", @"self", @"super", @"init", @"protocol", @"extension", @"override",
+            @"final", @"lazy", @"guard", @"where", @"associatedtype", @"typealias", @"throws",
+            @"rethrows", @"yield", @"with", @"print", @"fmt", @"println", @"console", @"log",
+            @"SELECT", @"FROM", @"WHERE", @"INSERT", @"UPDATE", @"DELETE", @"CREATE", @"TABLE",
+            @"VALUES", @"JOIN", @"LEFT", @"RIGHT", @"INNER", @"OUTER", @"ON", @"GROUP", @"ORDER",
+            @"BY", @"HAVING", @"LIMIT", @"OFFSET", @"AND", @"OR", @"NOT", @"NULL", @"AS",
+            @"DISTINCT", @"UNION", @"ALL",
+            nil];
+    }
+    return set;
+}
+
+static BOOL isKeyword(NSString *token) {
+    return [keywordSet() containsObject:token];
+}
+
+static NSString *detectLanguageTag(NSString *code) {
+    if ([code rangeOfString:@"package "].location != NSNotFound) return @"go";
+    if ([code rangeOfString:@"def "].location != NSNotFound) return @"python";
+    if ([code rangeOfString:@"function "].location != NSNotFound) return @"js";
+    if ([code rangeOfString:@"const "].location != NSNotFound) return @"js";
+    return @"code";
+}
+
+static NSAttributedString *highlightCode(NSString *code) {
+    NSFont *font = codeFont();
+    NSColor *defaultColor = hexColor(0xD4D4D4);
+    NSColor *commentColor = hexColor(0x6A9955);
+    NSColor *stringColor = hexColor(0xCE9178);
+    NSColor *numberColor = hexColor(0xB5CEA8);
+    NSColor *keywordColor = hexColor(0xC586C0);
+    NSColor *functionColor = hexColor(0xDCDCAA);
+
+    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+    [para setLineHeightMultiple:1.4];
+
+    NSDictionary *baseAttrs = @{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: defaultColor,
+        NSParagraphStyleAttributeName: para
+    };
+    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] initWithString:code attributes:baseAttrs];
+
+    NSUInteger len = code.length;
+    NSUInteger i = 0;
+    while (i < len) {
+        unichar c = [code characterAtIndex:i];
+        unichar next = (i + 1 < len) ? [code characterAtIndex:i + 1] : 0;
+
+        // Line comments (// or #)
+        if ((c == '/' && next == '/') || c == '#') {
+            NSUInteger start = i;
+            while (i < len && [code characterAtIndex:i] != '\n') i++;
+            [out addAttribute:NSForegroundColorAttributeName value:commentColor range:NSMakeRange(start, i - start)];
+            continue;
+        }
+
+        // Block comments (/* ... */)
+        if (c == '/' && next == '*') {
+            NSUInteger start = i;
+            i += 2;
+            while (i + 1 < len) {
+                if ([code characterAtIndex:i] == '*' && [code characterAtIndex:i + 1] == '/') {
+                    i += 2;
+                    break;
+                }
+                i++;
+            }
+            if (i < len && !(i >= 2 && [code characterAtIndex:i - 1] == '/' && [code characterAtIndex:i - 2] == '*')) {
+                i = len;
+            }
+            [out addAttribute:NSForegroundColorAttributeName value:commentColor range:NSMakeRange(start, i - start)];
+            continue;
+        }
+
+        // Strings
+        if (c == '"' || c == '\'' || c == '`') {
+            unichar quote = c;
+            NSUInteger start = i;
+            i++;
+            while (i < len) {
+                unichar ch = [code characterAtIndex:i];
+                if (ch == '\\' && i + 1 < len) {
+                    i += 2;
+                    continue;
+                }
+                if (ch == quote) {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            [out addAttribute:NSForegroundColorAttributeName value:stringColor range:NSMakeRange(start, i - start)];
+            continue;
+        }
+
+        // Identifiers / numbers
+        if (isalnum(c) || c == '_') {
+            NSUInteger start = i;
+            while (i < len) {
+                unichar ch = [code characterAtIndex:i];
+                if (isalnum(ch) || ch == '_') {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            NSUInteger end = i;
+            NSRange tokenRange = NSMakeRange(start, end - start);
+            NSString *token = [code substringWithRange:tokenRange];
+            BOOL startsDigit = isdigit(c);
+
+            // Peek ahead over whitespace to detect function calls.
+            NSUInteger j = i;
+            while (j < len && isspace([code characterAtIndex:j])) j++;
+            BOOL followedByParen = (j < len && [code characterAtIndex:j] == '(');
+
+            if (isKeyword(token)) {
+                [out addAttribute:NSForegroundColorAttributeName value:keywordColor range:tokenRange];
+            } else if (startsDigit) {
+                [out addAttribute:NSForegroundColorAttributeName value:numberColor range:tokenRange];
+            } else if (followedByParen) {
+                [out addAttribute:NSForegroundColorAttributeName value:functionColor range:tokenRange];
+            }
+            continue;
+        }
+
+        i++;
+    }
+    return out;
+}
+
+static BOOL answerLooksLikeCode(NSString *text) {
+    if ([text rangeOfString:@"```"].location != NSNotFound) return YES;
+    NSArray *markers = @[@"func ", @"def ", @"class ", @"import ", @"package ",
+                         @"const ", @"let ", @"var ", @"#include "];
+    for (NSString *m in markers) {
+        if ([text hasPrefix:m]) return YES;
+        NSString *pref = [@"\n" stringByAppendingString:m];
+        if ([text rangeOfString:pref].location != NSNotFound) return YES;
+    }
+    return NO;
+}
+
+static NSAttributedString *plainCodeString(NSString *text) {
+    NSFont *font = codeFont();
+    NSColor *defaultColor = hexColor(0xD4D4D4);
+    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+    [para setLineHeightMultiple:1.4];
+    NSDictionary *attrs = @{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: defaultColor,
+        NSParagraphStyleAttributeName: para
+    };
+    return [[NSAttributedString alloc] initWithString:text attributes:attrs];
+}
+
+static NSString *stripCodeFences(NSString *text) {
+    NSString *s = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([s hasPrefix:@"```"]) {
+        NSRange newline = [s rangeOfString:@"\n"];
+        if (newline.location != NSNotFound) {
+            s = [s substringFromIndex:newline.location + 1];
+        } else {
+            s = [s substringFromIndex:3];
+        }
+        s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    if ([s hasSuffix:@"```"]) {
+        s = [s substringToIndex:s.length - 3];
+        s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    return s;
+}
+
+static NSAttributedString *formatAnswerText(NSString *text) {
+    NSFont *bodyFont = [NSFont systemFontOfSize:13];
+    NSColor *bodyColor = [NSColor whiteColor];
+    NSDictionary *attrs = @{
+        NSFontAttributeName: bodyFont,
+        NSForegroundColorAttributeName: bodyColor
+    };
+    return [[NSAttributedString alloc] initWithString:text attributes:attrs];
+}
+
+static BOOL isFencedCodeOnly(NSString *text) {
+    if ([text rangeOfString:@"```"].location == NSNotFound) return NO;
+    NSArray *parts = [text componentsSeparatedByString:@"```"];
+    if (parts.count != 3) return NO;
+    NSString *before = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *after = [[parts lastObject] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return before.length == 0 && after.length == 0;
+}
+
+static NSAttributedString *formatMixedAnswer(NSString *text) {
+    NSFont *bodyFont = [NSFont systemFontOfSize:13];
+    NSColor *bodyColor = [NSColor whiteColor];
+    NSColor *codeBg = hexColor(0x1E1E1E);
+
+    NSMutableParagraphStyle *bodyPara = [[NSMutableParagraphStyle alloc] init];
+    [bodyPara setLineHeightMultiple:1.2];
+
+    NSMutableParagraphStyle *codePara = [[NSMutableParagraphStyle alloc] init];
+    [codePara setLineHeightMultiple:1.2];
+    [codePara setLineSpacing:0];
+
+    NSDictionary *bodyAttrs = @{
+        NSFontAttributeName: bodyFont,
+        NSForegroundColorAttributeName: bodyColor,
+        NSParagraphStyleAttributeName: bodyPara
+    };
+
+    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
     NSArray *parts = [text componentsSeparatedByString:@"```"];
     for (NSUInteger i = 0; i < parts.count; i++) {
         NSString *part = parts[i];
         if (i % 2 == 0) {
             if (part.length == 0) continue;
-            NSDictionary *attrs = @{
-                NSFontAttributeName: bodyFont,
-                NSForegroundColorAttributeName: bodyColor
-            };
-            [out appendAttributedString:[[NSAttributedString alloc] initWithString:part attributes:attrs]];
+            [out appendAttributedString:[[NSAttributedString alloc] initWithString:part attributes:bodyAttrs]];
         } else {
             NSString *code = part;
             NSRange newline = [code rangeOfString:@"\n"];
@@ -591,21 +842,133 @@ static NSAttributedString *formatAnswerText(NSString *text) {
             }
             code = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (code.length == 0) continue;
-            NSString *display = [NSString stringWithFormat:@"\n%@\n", code];
-            NSDictionary *attrs = @{
-                NSFontAttributeName: codeFont,
-                NSForegroundColorAttributeName: codeColor,
-                NSBackgroundColorAttributeName: codeBg
-            };
-            [out appendAttributedString:[[NSAttributedString alloc] initWithString:display attributes:attrs]];
+            if (out.length > 0) {
+                [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:bodyAttrs]];
+            }
+            NSAttributedString *highlighted = highlightCode(code);
+            NSMutableAttributedString *block = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
+            [block addAttribute:NSBackgroundColorAttributeName value:codeBg range:NSMakeRange(0, block.length)];
+            [block addAttribute:NSParagraphStyleAttributeName value:codePara range:NSMakeRange(0, block.length)];
+            [out appendAttributedString:block];
+            [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:bodyAttrs]];
         }
     }
     return out;
 }
 
+static void configureCodeView(BOOL code) {
+    if (!gAnswer || !gAnswerScroll) return;
+    if (code) {
+        // Make the whole answer card a single dark code block.
+        if (gAnswerPanel) {
+            [gAnswerPanel setFillColor:hexColor(0x1E1E1E)];
+            [gAnswerPanel setBorderColor:[NSColor clearColor]];
+            [gAnswerPanel setBorderWidth:0.0];
+            [gAnswerPanel setCornerRadius:10.0];
+        }
+        if (gInHistory) {
+            if (gAnswerHeader) [gAnswerHeader setHidden:NO];
+            if (gHistoryPosition) [gHistoryPosition setHidden:NO];
+            if (gCodeTag) [gCodeTag setHidden:YES];
+        } else {
+            if (gAnswerHeader) [gAnswerHeader setHidden:YES];
+            if (gHistoryPosition) [gHistoryPosition setHidden:YES];
+            if (gCodeTag) {
+                NSString *tag = (gAnswerType == AnswerTypeCode && !gGenerating)
+                    ? detectLanguageTag(gAnswerBuffer) : @"code";
+                [gCodeTag setStringValue:tag];
+                [gCodeTag setHidden:NO];
+            }
+        }
+
+        [gAnswer setBackgroundColor:hexColor(0x1E1E1E)];
+        [gAnswer setTextColor:hexColor(0xD4D4D4)];
+        [gAnswer setFont:codeFont()];
+        [gAnswer setTextContainerInset:NSMakeSize(12, 12)];
+        [[gAnswer textContainer] setWidthTracksTextView:NO];
+        [[gAnswer textContainer] setContainerSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+        [gAnswer setHorizontallyResizable:YES];
+        [gAnswer setVerticallyResizable:YES];
+        [gAnswer setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+        [gAnswer setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [gAnswerScroll setFrame:NSMakeRect(8, 34, kBarWidth - 26, 214)];
+        [gAnswerScroll setHasHorizontalScroller:YES];
+        [gAnswerScroll setHasVerticalScroller:YES];
+        [gAnswerScroll setBorderType:NSNoBorder];
+        [gAnswerScroll setDrawsBackground:NO];
+        [gAnswerScroll setWantsLayer:YES];
+        [gAnswerScroll layer].cornerRadius = 8.0;
+        [gAnswerScroll layer].masksToBounds = YES;
+    } else {
+        // Standard prose card.
+        if (gAnswerPanel) {
+            [gAnswerPanel setFillColor:[NSColor colorWithCalibratedWhite:0.10 alpha:0.95]];
+            [gAnswerPanel setBorderColor:[NSColor colorWithCalibratedWhite:0.25 alpha:1.0]];
+            [gAnswerPanel setBorderWidth:1.0];
+            [gAnswerPanel setCornerRadius:10.0];
+        }
+        if (gAnswerHeader) [gAnswerHeader setHidden:NO];
+        if (gCodeTag) [gCodeTag setHidden:YES];
+        if (gHistoryPosition) [gHistoryPosition setHidden:!gInHistory];
+
+        [gAnswer setBackgroundColor:[NSColor colorWithCalibratedWhite:0.08 alpha:1.0]];
+        [gAnswer setTextColor:[NSColor whiteColor]];
+        [gAnswer setFont:[NSFont systemFontOfSize:13]];
+        [gAnswer setTextContainerInset:NSMakeSize(0, 0)];
+        [[gAnswer textContainer] setWidthTracksTextView:YES];
+        NSRect bounds = [gAnswerScroll bounds];
+        [[gAnswer textContainer] setContainerSize:NSMakeSize(NSWidth(bounds), FLT_MAX)];
+        [gAnswer setHorizontallyResizable:NO];
+        [gAnswer setVerticallyResizable:YES];
+        [gAnswer setMaxSize:NSMakeSize(NSWidth(bounds), FLT_MAX)];
+        [gAnswer setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [gAnswerScroll setFrame:NSMakeRect(10, 40, kBarWidth - 30, 180)];
+        [gAnswerScroll setHasHorizontalScroller:NO];
+        [gAnswerScroll setHasVerticalScroller:YES];
+        [gAnswerScroll setBorderType:NSBezelBorder];
+        [gAnswerScroll setDrawsBackground:YES];
+        [gAnswerScroll setWantsLayer:NO];
+    }
+}
+
+static void updateAnswerHeader(void) {
+    if (!gAnswerHeader) return;
+    if (gInHistory) {
+        [gAnswerHeader setStringValue:@"History"];
+        [gAnswerHeader setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
+        [gAnswerHeader setFont:[NSFont systemFontOfSize:12]];
+    } else {
+        [gAnswerHeader setStringValue:@"Hermes"];
+        [gAnswerHeader setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
+        [gAnswerHeader setFont:[NSFont boldSystemFontOfSize:13]];
+    }
+}
+
 static void refreshAnswerDisplay(void) {
-    if (!gAnswer || gInHistory) return;
-    [[gAnswer textStorage] setAttributedString:formatAnswerText(gAnswerBuffer)];
+    if (!gAnswer) return;
+    updateAnswerHeader();
+    BOOL isFinalCode = (gAnswerType == AnswerTypeCode && !gGenerating);
+    BOOL hasFences = ([gAnswerBuffer rangeOfString:@"```"].location != NSNotFound);
+    if (isFinalCode && !hasFences) {
+        configureCodeView(YES);
+        NSString *code = stripCodeFences(gAnswerBuffer);
+        [[gAnswer textStorage] setAttributedString:highlightCode(code)];
+    } else if (isFinalCode && hasFences && isFencedCodeOnly(gAnswerBuffer)) {
+        configureCodeView(YES);
+        NSString *code = stripCodeFences(gAnswerBuffer);
+        [[gAnswer textStorage] setAttributedString:highlightCode(code)];
+    } else if (!gInHistory && gGenerating && answerLooksLikeCode(gAnswerBuffer)) {
+        configureCodeView(YES);
+        NSString *code = stripCodeFences(gAnswerBuffer);
+        [[gAnswer textStorage] setAttributedString:plainCodeString(code)];
+    } else {
+        configureCodeView(NO);
+        if (hasFences) {
+            [[gAnswer textStorage] setAttributedString:formatMixedAnswer(gAnswerBuffer)];
+        } else {
+            [[gAnswer textStorage] setAttributedString:formatAnswerText(gAnswerBuffer)];
+        }
+    }
 }
 
 void hermesOverlayBeginAnswer(void) {
@@ -613,8 +976,10 @@ void hermesOverlayBeginAnswer(void) {
         fprintf(stderr, "Hermes: BeginAnswer on main thread, gPanel=%p gAnswerWindow=%p\n",
                 (void *)gPanel, (void *)gAnswerWindow);
         ensureShown();
+        gAnswerType = 0;
         [gAnswerBuffer setString:@""];
         [[gAnswer textStorage] setAttributedString:formatAnswerText(@"")];
+        updateAnswerHeader();
         showAnswerWindow();
         // Re-order once more after the run loop has processed the show,
         // in case the parent window or another panel jumped in front.
@@ -640,11 +1005,12 @@ void hermesOverlayAppendAnswer(const char *delta) {
     });
 }
 
-void hermesOverlayFinalizeAnswer(const char *text) {
+void hermesOverlayFinalizeAnswer(const char *text, int type) {
     if (!text) return;
     NSString *s = [NSString stringWithUTF8String:text];
     dispatch_async(dispatch_get_main_queue(), ^{
         [gAnswerBuffer setString:s];
+        gAnswerType = type;
         gGenerating = NO;
         [gSpinner stopAnimation:nil];
         [gSpinner setHidden:YES];
@@ -743,15 +1109,19 @@ static void updatePinButton(bool pinned) {
 
 void hermesOverlayEnterHistory(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        gSavedAnswerType = gAnswerType;
+        [gSavedAnswerBuffer release];
+        gSavedAnswerBuffer = [gAnswerBuffer copy];
         gInHistory = YES;
         if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
+        if (gCodeTag) [gCodeTag setHidden:YES];
         if (gHistoryPosition) [gHistoryPosition setHidden:NO];
         if (gPinButton) [gPinButton setHidden:NO];
         showAnswerWindow();
     });
 }
 
-void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, bool pinned) {
+void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, int answerType, bool pinned) {
     if (!question || !answerPreview) return;
     NSString *q = [NSString stringWithUTF8String:question];
     NSString *a = [NSString stringWithUTF8String:answerPreview];
@@ -759,14 +1129,17 @@ void hermesOverlayShowHistoryItem(int index, int total, const char *question, co
         if (!gInHistory) {
             gInHistory = YES;
             if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
+            if (gCodeTag) [gCodeTag setHidden:YES];
             if (gHistoryPosition) [gHistoryPosition setHidden:NO];
             if (gPinButton) [gPinButton setHidden:NO];
         }
         if (gHistoryPosition) {
             [gHistoryPosition setStringValue:[NSString stringWithFormat:@"%d / %d", index + 1, total]];
         }
-        if (gAnswer) {
-            [[gAnswer textStorage] setAttributedString:formatAnswerText(a)];
+        if (gAnswerBuffer) {
+            [gAnswerBuffer setString:a];
+            gAnswerType = answerType;
+            refreshAnswerDisplay();
         }
         updatePinButton(pinned);
         if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:(index > 0)];
@@ -807,6 +1180,12 @@ void hermesOverlayFlash(const char *msg) {
 void hermesOverlayExitHistory(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         gInHistory = NO;
+        gAnswerType = gSavedAnswerType;
+        if (gAnswerBuffer && gSavedAnswerBuffer) {
+            [gAnswerBuffer setString:gSavedAnswerBuffer];
+        }
+        [gSavedAnswerBuffer release];
+        gSavedAnswerBuffer = nil;
         if (gAnswerHeader) [gAnswerHeader setStringValue:@"Hermes"];
         if (gHistoryPosition) {
             [gHistoryPosition setStringValue:@""];

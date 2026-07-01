@@ -16,7 +16,7 @@ char *hermesOverlayGetInstruction(void);
 void hermesOverlayAppendInstruction(const char *text, bool final);
 void hermesOverlayBeginAnswer(void);
 void hermesOverlayAppendAnswer(const char *delta);
-void hermesOverlayFinalizeAnswer(const char *text);
+void hermesOverlayFinalizeAnswer(const char *text, int type);
 void hermesOverlaySetIndicator(bool canSend, int clearsInSeconds);
 void hermesOverlaySetBusy(bool on);
 void hermesOverlaySetTrayCount(int n);
@@ -31,7 +31,7 @@ void hermesOverlaySetCaptureEnabled(bool enabled);
 void hermesOverlayHideSettings(void);
 void hermesOverlayMove(int dx, int dy);
 void hermesOverlayEnterHistory(void);
-void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, bool pinned);
+void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, int answerType, bool pinned);
 void hermesOverlaySetItemPinned(int index, bool pinned);
 void hermesOverlaySetPinnedBadge(int n);
 void hermesOverlayFlash(const char *msg);
@@ -77,7 +77,7 @@ type Overlay interface {
 	OnHistoryExit(handler func())
 	EnterHistory()
 	ExitHistory()
-	ShowHistoryItem(index, total int, question, answerPreview string, pinned bool)
+	ShowHistoryItem(index, total int, question, answerPreview string, answerType int, pinned bool)
 	SetItemPinned(index int, pinned bool)
 	SetPinnedBadge(n int)
 	Flash(msg string)
@@ -134,7 +134,7 @@ func (o *nativeOverlay) AppendAnswer(delta string) {
 func (o *nativeOverlay) FinalizeAnswer(a llm.Answer) {
 	c := C.CString(a.Text)
 	defer C.free(unsafe.Pointer(c))
-	C.hermesOverlayFinalizeAnswer(c)
+	C.hermesOverlayFinalizeAnswer(c, C.int(a.Type))
 }
 
 func (o *nativeOverlay) Instruction() string {
@@ -240,12 +240,12 @@ func (o *nativeOverlay) ExitHistory() {
 	C.hermesOverlayExitHistory()
 }
 
-func (o *nativeOverlay) ShowHistoryItem(index, total int, question, answerPreview string, pinned bool) {
+func (o *nativeOverlay) ShowHistoryItem(index, total int, question, answerPreview string, answerType int, pinned bool) {
 	cQuestion := C.CString(question)
 	cPreview := C.CString(answerPreview)
 	defer C.free(unsafe.Pointer(cQuestion))
 	defer C.free(unsafe.Pointer(cPreview))
-	C.hermesOverlayShowHistoryItem(C.int(index), C.int(total), cQuestion, cPreview, C.bool(pinned))
+	C.hermesOverlayShowHistoryItem(C.int(index), C.int(total), cQuestion, cPreview, C.int(answerType), C.bool(pinned))
 }
 
 func (o *nativeOverlay) SetItemPinned(index int, pinned bool) {

@@ -15,6 +15,7 @@ type Turn struct {
 	Instruction   string
 	ImageDataURLs []string
 	Answer        string
+	AnswerType    llm.AnswerType
 }
 
 // Thread stores prior turns and builds context-aware message lists.

@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -61,14 +60,6 @@ func run() {
 	var listening bool
 	var selectedHistory int = -1 // index into thread turns while reviewing history
 
-	previewText := func(text string) string {
-		text = strings.TrimSpace(text)
-		if len(text) <= 300 {
-			return text
-		}
-		return text[:300] + "..."
-	}
-
 	showCurrentHistory := func() {
 		turns := thread.Turns()
 		if len(turns) == 0 || selectedHistory < 0 || selectedHistory >= len(turns) {
@@ -80,7 +71,7 @@ func run() {
 		if question == "" {
 			question = "(screenshot)"
 		}
-		ovl.ShowHistoryItem(selectedHistory, len(turns), question, previewText(turn.Answer), thread.IsPinned(selectedHistory))
+		ovl.ShowHistoryItem(selectedHistory, len(turns), question, turn.Answer, int(turn.AnswerType), thread.IsPinned(selectedHistory))
 	}
 
 	moveHistory := func(delta int) {
@@ -221,6 +212,7 @@ func run() {
 			}
 
 			current.Answer = answer.Text
+			current.AnswerType = answer.Type
 			thread.Commit(current)
 			if answer.Type == llm.Code {
 				thread.SetAutoPin(thread.Len() - 1)
