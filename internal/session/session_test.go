@@ -12,7 +12,7 @@ func TestBuildHistory(t *testing.T) {
 	th.Commit(Turn{Instruction: "q1", Answer: "a1"})
 	th.Commit(Turn{Instruction: "q2", Answer: "a2"})
 
-	msgs := th.Build(Turn{Instruction: "q3"})
+	msgs := th.Build(Turn{Instruction: "q3"}, true)
 	assert.Equal(t, 6, len(msgs)) // system + 2*(user+assistant) + current
 	assert.Equal(t, "system", msgs[0].Role)
 	assert.Equal(t, "assistant", msgs[2].Role)
@@ -25,7 +25,7 @@ func TestMaxTurnsTrim(t *testing.T) {
 	th.Commit(Turn{Instruction: "q2", Answer: "a2"})
 	th.Commit(Turn{Instruction: "q3", Answer: "a3"})
 
-	msgs := th.Build(Turn{Instruction: "q4"})
+	msgs := th.Build(Turn{Instruction: "q4"}, true)
 	// system + 2*(user+assistant) + current = 6
 	assert.Equal(t, 6, len(msgs))
 	assert.Equal(t, "q2", msgs[1].Text)
@@ -35,14 +35,14 @@ func TestImageWindow(t *testing.T) {
 	th := NewThread(12, 2, "system")
 	th.Commit(Turn{Instruction: "q1", Answer: "a1", ImageDataURLs: []string{"old1"}})
 
-	msgs := th.Build(Turn{Instruction: "q2", ImageDataURLs: []string{"new1"}})
+	msgs := th.Build(Turn{Instruction: "q2", ImageDataURLs: []string{"new1"}}, true)
 	last := msgs[len(msgs)-1]
 	assert.Equal(t, []string{"old1", "new1"}, last.ImageDataURLs)
 }
 
 func TestEmptyInstructionPlaceholder(t *testing.T) {
 	th := NewThread(12, 1, llm.SystemPrompt(""))
-	msgs := th.Build(Turn{ImageDataURLs: []string{"img"}})
+	msgs := th.Build(Turn{ImageDataURLs: []string{"img"}}, true)
 	last := msgs[len(msgs)-1]
 	assert.Equal(t, "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."+VoiceReminder, last.Text)
 }

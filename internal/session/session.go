@@ -143,7 +143,8 @@ func (t *Thread) PinnedCount() int {
 }
 
 // Build creates the message list for the current turn, including trimmed history.
-func (t *Thread) Build(current Turn) []llm.Message {
+// If vision is false, all image attachments are dropped.
+func (t *Thread) Build(current Turn, vision bool) []llm.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -182,22 +183,24 @@ func (t *Thread) Build(current Turn) []llm.Message {
 
 	// Current turn: include the image window of most recent screenshots.
 	var images []string
-	if t.imageWindow > 0 && len(t.turns) > 0 {
-		window := []string{}
-		for i := len(t.turns) - 1; i >= 0 && len(window) < t.imageWindow-1; i-- {
-			for j := len(t.turns[i].ImageDataURLs) - 1; j >= 0 && len(window) < t.imageWindow-1; j-- {
-				window = append([]string{t.turns[i].ImageDataURLs[j]}, window...)
+	if vision {
+		if t.imageWindow > 0 && len(t.turns) > 0 {
+			window := []string{}
+			for i := len(t.turns) - 1; i >= 0 && len(window) < t.imageWindow-1; i-- {
+				for j := len(t.turns[i].ImageDataURLs) - 1; j >= 0 && len(window) < t.imageWindow-1; j-- {
+					window = append([]string{t.turns[i].ImageDataURLs[j]}, window...)
+				}
 			}
+			images = append(window, current.ImageDataURLs...)
+			if len(images) > t.imageWindow {
+				images = images[len(images)-t.imageWindow:]
+			}
+		} else {
+			images = current.ImageDataURLs
 		}
-		images = append(window, current.ImageDataURLs...)
-		if len(images) > t.imageWindow {
-			images = images[len(images)-t.imageWindow:]
+		if len(images) > 5 {
+			images = images[len(images)-5:]
 		}
-	} else {
-		images = current.ImageDataURLs
-	}
-	if len(images) > 5 {
-		images = images[len(images)-5:]
 	}
 
 	currentText := current.Instruction

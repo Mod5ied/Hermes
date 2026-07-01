@@ -11,6 +11,7 @@ static NSTextField *gInput = nil;
 static NSTextView *gAnswer = nil;
 static NSBox *gAnswerPanel = nil;
 static NSTextField *gCountdown = nil;
+static NSTextField *gModelNote = nil;
 static NSView *gIndicatorDot = nil;
 static NSTextField *gIndicatorLabel = nil;
 static NSProgressIndicator *gSpinner = nil;
@@ -18,6 +19,7 @@ static NSTextField *gTrayBadge = nil;
 static NSButton *gMicButton = nil;
 static NSButton *gTypeButton = nil;
 static NSTextField *gTypeBadge = nil;
+static NSButton *gCaptureButton = nil;
 static NSButton *gHistoryButton = nil;
 static NSTextField *gPinBadge = nil;
 static int gCountdownGeneration = 0;
@@ -38,7 +40,7 @@ static void onMain(void (^block)(void)) {
     else dispatch_async(dispatch_get_main_queue(), block);
 }
 
-static const CGFloat kBarHeight = 44.0;
+static const CGFloat kBarHeight = 58.0;
 static const CGFloat kBarWidth = 688.0;
 
 @interface HermesOverlayView : NSView
@@ -244,6 +246,20 @@ void hermesOverlayInit(bool stealth) {
     CGFloat inputRight = xpos + inputWidth;
     gInput = input;
 
+    // Model text-only note sits just below the input field.
+    NSTextField *modelNote = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos, ypos + kInputHeight + 2, inputWidth, 12)];
+    [modelNote setEditable:NO];
+    [modelNote setBordered:NO];
+    [modelNote setDrawsBackground:NO];
+    [modelNote setTextColor:[NSColor colorWithCalibratedRed:1.0 green:0.6 blue:0.0 alpha:1.0]];
+    [modelNote setFont:[NSFont systemFontOfSize:10]];
+    [modelNote setStringValue:@""];
+    [modelNote setAlignment:NSTextAlignmentCenter];
+    [modelNote setRefusesFirstResponder:YES];
+    [modelNote setHidden:YES];
+    [root addSubview:modelNote];
+    gModelNote = modelNote;
+
     // Status cluster anchored to the right end of the input field
     gSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(inputRight - 50, ypos + 4, 16, 16)];
     [gSpinner setStyle:NSProgressIndicatorStyleSpinning];
@@ -299,6 +315,7 @@ void hermesOverlayInit(bool stealth) {
     NSButton *capBtn = makeIconButton(@"camera.viewfinder", @"Capture (CMD+H)", @selector(onCapture:));
     [capBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
     [root addSubview:capBtn];
+    gCaptureButton = capBtn;
     xpos += kIconSize + kIconGap;
 
     NSButton *clipBtn = makeIconButton(@"paperclip", @"Attachment Tray", @selector(onTray:));
@@ -693,6 +710,26 @@ void hermesOverlaySetTrayCount(int n) {
     });
 }
 
+void hermesOverlaySetModelNote(const char *msg) {
+    NSString *s = msg ? [NSString stringWithUTF8String:msg] : @"";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gModelNote) return;
+        if (s.length == 0) {
+            [gModelNote setStringValue:@""];
+            [gModelNote setHidden:YES];
+        } else {
+            [gModelNote setStringValue:s];
+            [gModelNote setHidden:NO];
+        }
+    });
+}
+
+void hermesOverlaySetCaptureEnabled(bool enabled) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gCaptureButton) [gCaptureButton setEnabled:enabled ? YES : NO];
+    });
+}
+
 void hermesOverlaySetAnswerCount(int n) {
     // Answer counter removed; kept as a no-op for ABI compatibility.
     (void)n;
@@ -882,6 +919,9 @@ static NSTextField *gSetAPIKey = nil;
 }
 @end
 static NSPopUpButton *gSetProvider = nil;
+static NSPopUpButton *gSetModel = nil;
+static NSMutableArray<NSString *> *gModelNames = nil;
+static NSDictionary *gSettingsPayload = nil;
 static NSButton *gSetStealth = nil;
 static NSButton *gSetHumanise = nil;
 static NSTextField *gSetDelay = nil;
@@ -896,6 +936,33 @@ static NSTextField *makeLabel(NSRect frame, NSString *text) {
     [f setDrawsBackground:NO];
     [f setTextColor:[NSColor whiteColor]];
     return f;
+}
+
+static void populateModelPopup(NSString *provider, NSString *selectedModel) {
+    fprintf(stderr, "Hermes: populateModelPopup provider=%s gSetModel=%p\n", provider.UTF8String, (void *)gSetModel);
+    fflush(stderr);
+    if (!gSetModel) return;
+    [gSetModel removeAllItems];
+    [gModelNames removeAllObjects];
+    NSDictionary *modelsDict = gSettingsPayload[@"models"];
+    NSArray *models = modelsDict[provider];
+    if (![models isKindOfClass:[NSArray class]]) return;
+    NSInteger selectedIdx = 0;
+    for (NSInteger i = 0; i < models.count; i++) {
+        NSDictionary *m = models[i];
+        NSString *name = m[@"name"];
+        BOOL vision = [m[@"vision"] boolValue];
+        NSString *title = vision ? [NSString stringWithFormat:@"%@  · vision", name]
+                                 : [NSString stringWithFormat:@"%@  · text", name];
+        [gSetModel addItemWithTitle:title];
+        [gModelNames addObject:name];
+        if (selectedModel && [name isEqualToString:selectedModel]) {
+            selectedIdx = i;
+        }
+    }
+    if (gSetModel.numberOfItems > 0) {
+        [gSetModel selectItemAtIndex:selectedIdx];
+    }
 }
 
 static NSTextField *makeField(NSRect frame, NSString *value) {
@@ -957,14 +1024,20 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
 }
 @end
 
-void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool stealth, bool humanise,
-                               int delayMs, const char *resumeProfile, const char *speechLocale) {
+void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON,
+                               bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale) {
     // Copy the C strings immediately: this function is async, and the caller
     // frees the buffers once the C call returns.
     NSString *nsApiKey = [NSString stringWithUTF8String:apiKey ?: ""];
     NSString *nsProvider = [NSString stringWithUTF8String:provider ?: "Groq"];
+    NSString *nsModel = [NSString stringWithUTF8String:model ?: ""];
     NSString *nsResume = [NSString stringWithUTF8String:resumeProfile ?: ""];
     NSString *nsLocale = [NSString stringWithUTF8String:speechLocale ?: "en-US"];
+    NSString *nsSettingsJSON = [NSString stringWithUTF8String:settingsJSON ?: "{}"];
+    NSData *jsonData = [nsSettingsJSON dataUsingEncoding:NSUTF8StringEncoding];
+    NSError *jsonErr = nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonErr];
+    NSDictionary *payload = [parsed isKindOfClass:[NSDictionary class]] ? parsed : @{};
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (gSettingsWindow) {
@@ -972,9 +1045,17 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
             return;
         }
 
+        if (gSettingsPayload != payload) {
+            [gSettingsPayload release];
+            gSettingsPayload = [payload retain];
+        }
+        if (!gModelNames) {
+            gModelNames = [[NSMutableArray alloc] init];
+        }
+
         NSRect barFrame = [gPanel frame];
         const CGFloat settingsW = 420.0;
-        const CGFloat settingsH = 352.0;
+        const CGFloat settingsH = 420.0;
         CGFloat sx = barFrame.origin.x - 65.0;
         CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 35.0;
         // If there isn't room below the bar, open above it instead.
@@ -997,7 +1078,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
         }
         [win setDelegate:gSettingsDelegate];
 
-        CGFloat y = 20;
+        CGFloat y = 30;
 
         // Save: last item, wide, light gray, with hover.
         HermesSaveButton *save = [[HermesSaveButton alloc] initWithFrame:NSMakeRect(20, y, 380, 32)];
@@ -1075,13 +1156,23 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
         [gSetProvider addItemWithTitle:@"Groq"];
         [gSetProvider addItemWithTitle:@"Cerebras"];
         [gSetProvider selectItemWithTitle:nsProvider];
+        [gSetProvider setTarget:nil];
+        [gSetProvider setAction:@selector(onProviderChanged:)];
         [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Provider:")];
         [root addSubview:gSetProvider];
+        y += 36;
+
+        // Model dropdown, repopulated when Provider changes.
+        gSetModel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, y, 280, 22) pullsDown:NO];
+        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Model:")];
+        [root addSubview:gSetModel];
         y += 36;
 
         gSetAPIKey = makeField(NSMakeRect(110, y, 280, 22), nsApiKey);
         [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"API Key:")];
         [root addSubview:gSetAPIKey];
+
+        populateModelPopup(nsProvider, nsModel);
 
         gSettingsWindow = win;
         [NSApp activateIgnoringOtherApps:YES];
@@ -1107,6 +1198,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
 - (void)onCloseAnswer:(id)sender;
 - (void)onCopyAnswer:(id)sender;
 - (void)onSettingsSave:(id)sender;
+- (void)onProviderChanged:(id)sender;
 @end
 
 @implementation NSApplication (HermesOverlayActions)
@@ -1168,17 +1260,46 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool st
     [pb clearContents];
     [pb setString:gAnswerBuffer forType:NSPasteboardTypeString];
 }
+- (void)onProviderChanged:(id)sender {
+    NSString *provider = [[gSetProvider selectedItem] title];
+    fprintf(stderr, "Hermes: onProviderChanged -> %s\n", provider.UTF8String);
+    fflush(stderr);
+    NSDictionary *keys = gSettingsPayload[@"keys"];
+    NSString *key = keys[provider];
+    if (![key isKindOfClass:[NSString class]]) key = @"";
+    fprintf(stderr, "Hermes: key update gSetAPIKey=%p key=%s\n", (void *)gSetAPIKey, key.UTF8String);
+    fflush(stderr);
+    [gSetAPIKey setStringValue:key];
+    fprintf(stderr, "Hermes: key update done\n");
+    fflush(stderr);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        fprintf(stderr, "Hermes: delayed block fired\n");
+        fflush(stderr);
+        populateModelPopup(provider, nil);
+    });
+}
+
 - (void)onSettingsSave:(id)sender {
     if (!gSettingsWindow) return;
 
     const char *apiKey = [[gSetAPIKey stringValue] UTF8String];
     const char *provider = [[[gSetProvider selectedItem] title] UTF8String];
+    NSString *model = @"";
+    if (gSetModel && gModelNames.count > 0) {
+        NSInteger idx = [gSetModel indexOfSelectedItem];
+        if (idx >= 0 && idx < (NSInteger)gModelNames.count) {
+            model = gModelNames[idx];
+        }
+    }
+    if (model.length == 0 && gModelNames.count > 0) {
+        model = gModelNames[0];
+    }
     const char *locale = [[[gSetLocale selectedItem] title] UTF8String];
     const char *profile = [[gSetResume string] UTF8String];
     int delay = [[gSetDelay stringValue] intValue];
     if (delay < 1) delay = 90;
 
-    hermesOverlayOnSettingsSaved((char *)apiKey, (char *)provider,
+    hermesOverlayOnSettingsSaved((char *)apiKey, (char *)provider, (char *)[model UTF8String],
         [gSetStealth state] == NSControlStateValueOn ? 1 : 0,
         [gSetHumanise state] == NSControlStateValueOn ? 1 : 0,
         delay, (char *)profile, (char *)locale);

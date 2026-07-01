@@ -178,6 +178,11 @@ func run() {
 		}
 
 		instruction := ovl.Instruction()
+		vision := config.IsVisionModel(cfg.Provider, cfg.Model)
+		if !vision && tray.Count() > 0 {
+			tray.Clear()
+			ovl.SetTrayCount(0)
+		}
 		if instruction == "" && tray.Count() == 0 {
 			return
 		}
@@ -194,7 +199,7 @@ func run() {
 			Instruction:   instruction,
 			ImageDataURLs: tray.Shots(),
 		}
-		msgs := thread.Build(current)
+		msgs := thread.Build(current, vision)
 		tracker.RecordSend()
 		ovl.SetBusy(true)
 		ovl.BeginAnswer()
@@ -272,9 +277,24 @@ func run() {
 	ovl.OnSettings(func() {
 		overlay.ShowSettings(cfg)
 	})
-	ovl.OnSettingsSaved(func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
+	updateVisionUI := func() {
+		vision := config.IsVisionModel(cfg.Provider, cfg.Model)
+		ovl.SetCaptureEnabled(vision)
+		if vision {
+			ovl.SetModelNote("")
+		} else {
+			ovl.SetModelNote("Model is text-only, screenshots ignored.")
+		}
+	}
+
+	ovl.OnSettingsSaved(func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
+		if cfg.APIKeys == nil {
+			cfg.APIKeys = map[string]string{}
+		}
+		cfg.APIKeys[provider] = apiKey
 		cfg.APIKey = apiKey
 		cfg.Provider = provider
+		cfg.Model = model
 		cfg.Stealth = stealth
 		cfg.Humanise = humanise
 		cfg.BaseDelay = delay
@@ -288,6 +308,7 @@ func run() {
 		thread = session.NewThreadFromConfig(cfg)
 		typerEngine = typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
 		ovl.SetStealth(cfg.Stealth)
+		updateVisionUI()
 	})
 	ovl.OnType(doType)
 	ovl.OnTypeReady(func() {
@@ -312,6 +333,8 @@ func run() {
 		selectedHistory = -1
 		ovl.ExitHistory()
 	})
+
+	updateVisionUI()
 
 	// Hotkeys — register off the main goroutine. golang.design/x/hotkey
 	// internally dispatch_sync()s to the main queue to install its event tap.

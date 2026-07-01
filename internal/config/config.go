@@ -18,6 +18,49 @@ const (
 	ProviderCerebras = "Cerebras"
 )
 
+// ModelInfo describes one model available for a provider.
+type ModelInfo struct {
+	Name   string `json:"name"`
+	Vision bool   `json:"vision"`
+}
+
+// ProviderModels maps each provider to its available models.
+var ProviderModels = map[string][]ModelInfo{
+	ProviderGroq: {
+		{Name: "meta-llama/llama-4-scout-17b-16e-instruct", Vision: true},
+	},
+	ProviderCerebras: {
+		{Name: "gemma-4-31b", Vision: true},
+		{Name: "gpt-oss-120b", Vision: false},
+		{Name: "zai-glm-4.7", Vision: false},
+	},
+}
+
+// ProviderBaseURLs maps each provider to its API endpoint.
+var ProviderBaseURLs = map[string]string{
+	ProviderGroq:     DefaultBase,
+	ProviderCerebras: "https://api.cerebras.ai/v1",
+}
+
+// DefaultModel returns the default model for a provider.
+func DefaultModel(provider string) string {
+	models := ProviderModels[provider]
+	if len(models) > 0 {
+		return models[0].Name
+	}
+	return ProviderModels[ProviderGroq][0].Name
+}
+
+// IsVisionModel reports whether the given model supports image inputs.
+func IsVisionModel(provider, model string) bool {
+	for _, m := range ProviderModels[provider] {
+		if m.Name == model {
+			return m.Vision
+		}
+	}
+	return false
+}
+
 // Rect represents a screen region in display pixels.
 type Rect struct {
 	X int `json:"x"`
@@ -28,25 +71,26 @@ type Rect struct {
 
 // Config holds all user settings and runtime state.
 type Config struct {
-	APIKey        string        `json:"api_key"`
-	BaseURL       string        `json:"base_url"`
-	Model         string        `json:"model"`
-	Provider      string        `json:"provider"`
-	Stealth       bool          `json:"stealth"`
-	Humanise      bool          `json:"humanise"`
-	BaseDelay     time.Duration `json:"base_delay_ms"`
-	Region        *Rect         `json:"region,omitempty"`
-	ContextTurns  int           `json:"context_turns"`
-	ImageWindow   int           `json:"image_window"`
-	SpeechLocale  string        `json:"speech_locale"`
-	ResumeProfile string        `json:"resume_profile"`
+	APIKey        string            `json:"api_key"`
+	APIKeys       map[string]string `json:"provider_api_keys,omitempty"`
+	BaseURL       string            `json:"base_url"`
+	Model         string            `json:"model"`
+	Provider      string            `json:"provider"`
+	Stealth       bool              `json:"stealth"`
+	Humanise      bool              `json:"humanise"`
+	BaseDelay     time.Duration     `json:"base_delay_ms"`
+	Region        *Rect             `json:"region,omitempty"`
+	ContextTurns  int               `json:"context_turns"`
+	ImageWindow   int               `json:"image_window"`
+	SpeechLocale  string            `json:"speech_locale"`
+	ResumeProfile string            `json:"resume_profile"`
 }
 
 // Default returns a Config populated with defaults.
 func Default() Config {
 	return Config{
 		BaseURL:      DefaultBase,
-		Model:        "meta-llama/llama-4-scout-17b-16e-instruct",
+		Model:        ProviderModels[ProviderGroq][0].Name,
 		Provider:     ProviderGroq,
 		Stealth:      true,
 		Humanise:     true,
@@ -57,21 +101,39 @@ func Default() Config {
 	}
 }
 
-// ApplyProviderDefaults sets BaseURL and Model from the configured provider.
+// ApplyProviderDefaults sets BaseURL and Model from the configured provider and
+// keeps the active API key in sync with the per-provider key store.
 func ApplyProviderDefaults(c *Config) {
-	switch c.Provider {
-	case ProviderCerebras:
-		c.BaseURL = "https://api.cerebras.ai/v1"
-		if c.Model == "" || c.Model == "meta-llama/llama-4-scout-17b-16e-instruct" {
-			c.Model = "llama3.1-70b"
-		}
-	default:
+	if c.Provider == "" {
 		c.Provider = ProviderGroq
-		c.BaseURL = DefaultBase
-		if c.Model == "" || c.Model == "llama3.1-70b" {
-			c.Model = "meta-llama/llama-4-scout-17b-16e-instruct"
+	}
+	if _, ok := ProviderBaseURLs[c.Provider]; !ok {
+		c.Provider = ProviderGroq
+	}
+
+	c.BaseURL = ProviderBaseURLs[c.Provider]
+
+	// If the current model does not belong to this provider, reset to the default.
+	if !modelExists(c.Provider, c.Model) {
+		c.Model = DefaultModel(c.Provider)
+	}
+
+	// Restore the stored key for this provider, if any.
+	if c.APIKeys == nil {
+		c.APIKeys = map[string]string{}
+	}
+	if key, ok := c.APIKeys[c.Provider]; ok && key != "" {
+		c.APIKey = key
+	}
+}
+
+func modelExists(provider, model string) bool {
+	for _, m := range ProviderModels[provider] {
+		if m.Name == model {
+			return true
 		}
 	}
+	return false
 }
 
 // Dir returns the application's support directory.
@@ -122,11 +184,22 @@ func Load() (Config, error) {
 		cfg.BaseURL = DefaultBase
 	}
 	if cfg.Model == "" {
-		cfg.Model = "meta-llama/llama-4-scout-17b-16e-instruct"
+		cfg.Model = DefaultModel(ProviderGroq)
 	}
 	if cfg.Provider == "" {
 		cfg.Provider = ProviderGroq
 	}
+
+	// Migrate the legacy single API key into the per-provider map.
+	if cfg.APIKeys == nil {
+		cfg.APIKeys = map[string]string{}
+	}
+	if cfg.APIKey != "" {
+		if _, ok := cfg.APIKeys[cfg.Provider]; !ok {
+			cfg.APIKeys[cfg.Provider] = cfg.APIKey
+		}
+	}
+
 	ApplyProviderDefaults(&cfg)
 	if cfg.ContextTurns <= 0 {
 		cfg.ContextTurns = 4
@@ -174,7 +247,7 @@ func Save(c Config) error {
 // ValidateSend returns an error if the app is not allowed to send a request.
 func (c Config) ValidateSend() error {
 	if c.APIKey == "" {
-		return fmt.Errorf("Groq API key is not set. Add it in Settings or set %s", APIKeyEnv)
+		return fmt.Errorf("%s API key is not set. Add it in Settings or set %s", c.Provider, APIKeyEnv)
 	}
 	return nil
 }

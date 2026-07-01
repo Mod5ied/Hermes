@@ -25,7 +25,9 @@ void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
 void hermesOverlayFreeString(char *s);
 void hermesOverlayRun(void);
-void hermesOverlayShowSettings(const char *apiKey, const char *provider, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
+void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
+void hermesOverlaySetModelNote(const char *msg);
+void hermesOverlaySetCaptureEnabled(bool enabled);
 void hermesOverlayHideSettings(void);
 void hermesOverlayMove(int dx, int dy);
 void hermesOverlayEnterHistory(void);
@@ -37,6 +39,7 @@ void hermesOverlayExitHistory(void);
 */
 import "C"
 import (
+	"encoding/json"
 	"time"
 	"unsafe"
 
@@ -64,7 +67,9 @@ type Overlay interface {
 	OnSettings(handler func())
 	OnType(handler func())
 	OnTypeReady(handler func())
-	OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
+	OnSettingsSaved(handler func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
+	SetModelNote(msg string)
+	SetCaptureEnabled(enabled bool)
 	OnHistoryEnter(handler func())
 	OnHistoryPrev(handler func())
 	OnHistoryNext(handler func())
@@ -108,7 +113,7 @@ type nativeOverlay struct {
 	onSettings     func()
 	onType         func()
 	onTypeReady    func()
-	onSettingsSaved func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onSettingsSaved func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
 	onHistoryEnter func()
 	onHistoryPrev  func()
 	onHistoryNext  func()
@@ -203,7 +208,7 @@ func (o *nativeOverlay) OnTypeReady(handler func()) {
 	o.onTypeReady = handler
 }
 
-func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, provider string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
+func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
 	o.onSettingsSaved = handler
 }
 
@@ -269,6 +274,16 @@ func HideSettings() {
 	C.hermesOverlayHideSettings()
 }
 
+func (o *nativeOverlay) SetModelNote(msg string) {
+	c := C.CString(msg)
+	defer C.free(unsafe.Pointer(c))
+	C.hermesOverlaySetModelNote(c)
+}
+
+func (o *nativeOverlay) SetCaptureEnabled(enabled bool) {
+	C.hermesOverlaySetCaptureEnabled(C.bool(enabled))
+}
+
 func (o *nativeOverlay) Move(dx, dy int) {
 	C.hermesOverlayMove(C.int(dx), C.int(dy))
 }
@@ -286,7 +301,17 @@ func ShowSettings(cfg config.Config) {
 
 	cProvider := C.CString(cfg.Provider)
 	defer C.free(unsafe.Pointer(cProvider))
-	C.hermesOverlayShowSettings(cKey, cProvider, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
+
+	type settingsPayload struct {
+		Models map[string][]config.ModelInfo `json:"models"`
+		Keys   map[string]string             `json:"keys"`
+	}
+	payload := settingsPayload{Models: config.ProviderModels, Keys: cfg.APIKeys}
+	payloadJSON, _ := json.Marshal(payload)
+	cPayloadJSON := C.CString(string(payloadJSON))
+	defer C.free(unsafe.Pointer(cPayloadJSON))
+
+	C.hermesOverlayShowSettings(cKey, cProvider, cModel, cPayloadJSON, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
 		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale)
 }
 
@@ -375,11 +400,12 @@ func hermesOverlayOnHistoryExit() {
 }
 
 //export hermesOverlayOnSettingsSaved
-func hermesOverlayOnSettingsSaved(apiKey *C.char, provider *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
+func hermesOverlayOnSettingsSaved(apiKey *C.char, provider *C.char, model *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
 	if currentOverlay != nil && currentOverlay.onSettingsSaved != nil {
 		currentOverlay.onSettingsSaved(
 			C.GoString(apiKey),
 			C.GoString(provider),
+			C.GoString(model),
 			stealth != 0,
 			humanise != 0,
 			time.Duration(delayMs)*time.Millisecond,
