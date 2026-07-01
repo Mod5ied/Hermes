@@ -13,7 +13,7 @@ package capture
 int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outLen);
 
 // hermes_select_region shows a full-screen selection overlay and returns the
-// selected rectangle in screen points (top-left origin, Cocoa coordinate space).
+// selected rectangle in screen points (bottom-left origin, AppKit window space).
 // If the user cancels, width and height are zero.
 void hermes_select_region(int seedX, int seedY, int seedW, int seedH,
                           int *outX, int *outY, int *outW, int *outH);
@@ -49,8 +49,12 @@ func BackingScale() float64 {
 // returns the selected region in display pixels. If the user cancels, ok is false.
 func SelectRegion(seed Rect) (Rect, bool, error) {
 	var cx, cy, cw, ch C.int
+	// The selector works in AppKit window points (bottom-left origin).
+	// The stored seed is in display pixels, so convert it before passing it in.
+	scale := BackingScale()
 	C.hermes_select_region(
-		C.int(seed.X), C.int(seed.Y), C.int(seed.W), C.int(seed.H),
+		C.int(float64(seed.X)/scale), C.int(float64(seed.Y)/scale),
+		C.int(float64(seed.W)/scale), C.int(float64(seed.H)/scale),
 		&cx, &cy, &cw, &ch,
 	)
 	w := int(cw)
@@ -60,7 +64,6 @@ func SelectRegion(seed Rect) (Rect, bool, error) {
 	}
 
 	// Convert points to pixels for storage and capture.
-	scale := BackingScale()
 	r := Rect{
 		X: int(float64(int(cx)) * scale),
 		Y: int(float64(int(cy)) * scale),

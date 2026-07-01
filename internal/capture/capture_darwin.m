@@ -191,9 +191,23 @@ int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outL
         }
         if (scale <= 0) scale = 1.0;
 
-        // SCK sourceRect is in points; convert from stored pixels.
-        CGRect targetPoints = CGRectMake((CGFloat)x / scale, (CGFloat)y / scale,
-                                         (CGFloat)w / scale, (CGFloat)h / scale);
+        // Stored pixels use a bottom-left origin (AppKit), but SCK sourceRect
+        // expects a top-left origin. Flip y and clamp to the display.
+        CGRect displayBounds = CGDisplayBounds(displayID);
+        CGFloat displayW = displayBounds.size.width;
+        CGFloat displayH = displayBounds.size.height;
+        CGFloat px = (CGFloat)x / scale;
+        CGFloat py = (CGFloat)y / scale;
+        CGFloat pw = (CGFloat)w / scale;
+        CGFloat ph = (CGFloat)h / scale;
+        CGFloat sourceY = displayH - py - ph;
+        if (px < 0) px = 0;
+        if (sourceY < 0) sourceY = 0;
+        if (pw > displayW) pw = displayW;
+        if (ph > displayH) ph = displayH;
+        if (px + pw > displayW) pw = displayW - px;
+        if (sourceY + ph > displayH) ph = displayH - sourceY;
+        CGRect targetPoints = CGRectMake(px, sourceY, pw, ph);
 
         [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
             if (error) {
