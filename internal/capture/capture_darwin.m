@@ -284,3 +284,95 @@ int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outL
     *outLen = len;
     return 0;
 }
+
+int hermes_capture_front_window(void **outData, size_t *outLen) {
+    if (!outData || !outLen) return -1;
+    __block int result = -1;
+    __block NSData *pngData = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
+            if (error || !content) {
+                result = -2;
+                dispatch_semaphore_signal(sem);
+                return;
+            }
+
+            SCWindow *target = nil;
+            pid_t ourPID = [[NSProcessInfo processInfo] processIdentifier];
+            for (SCWindow *w in content.windows) {
+                if (!w.isOnScreen) continue;
+                if (w.windowLayer != 0) continue;
+                SCRunningApplication *app = w.owningApplication;
+                if (!app) continue;
+                if ([app.bundleIdentifier isEqualToString:HermesBundleID]) continue;
+                if (app.processID == ourPID) continue;
+                CGFloat area = NSWidth(w.frame) * NSHeight(w.frame);
+                if (area < 10000.0) continue;
+                target = w;
+                break;
+            }
+            if (!target) {
+                result = -5;
+                dispatch_semaphore_signal(sem);
+                return;
+            }
+
+            SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:target];
+            SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
+
+            // Determine the backing scale for the display that contains this window.
+            CGFloat scale = 1.0;
+            uint32_t displayCount = 0;
+            CGDirectDisplayID displays[8];
+            if (CGGetActiveDisplayList(8, displays, &displayCount) == kCGErrorSuccess) {
+                CGPoint center = CGPointMake(CGRectGetMidX(target.frame), CGRectGetMidY(target.frame));
+                for (uint32_t i = 0; i < displayCount; i++) {
+                    CGRect bounds = CGDisplayBounds(displays[i]);
+                    if (CGRectContainsPoint(bounds, center) && bounds.size.width > 0) {
+                        scale = (CGFloat)CGDisplayPixelsWide(displays[i]) / bounds.size.width;
+                        break;
+                    }
+                }
+            }
+            cfg.width = (NSInteger)round(NSWidth(target.frame) * scale);
+            cfg.height = (NSInteger)round(NSHeight(target.frame) * scale);
+            cfg.showsCursor = NO;
+            cfg.capturesAudio = NO;
+
+            [SCScreenshotManager captureImageWithFilter:filter
+                                          configuration:cfg
+                                      completionHandler:^(CGImageRef img, NSError *error2) {
+                if (error2 || !img) {
+                    result = -3;
+                    dispatch_semaphore_signal(sem);
+                    return;
+                }
+                NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+                pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                            properties:@{}];
+                if (!pngData || pngData.length == 0) {
+                    result = -4;
+                } else {
+                    result = 0;
+                }
+                dispatch_semaphore_signal(sem);
+            }];
+        }];
+    });
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+
+    if (result != 0 || !pngData) {
+        return result;
+    }
+
+    size_t len = pngData.length;
+    void *buf = malloc(len);
+    if (!buf) return -6;
+    memcpy(buf, pngData.bytes, len);
+    *outData = buf;
+    *outLen = len;
+    return 0;
+}

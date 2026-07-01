@@ -120,30 +120,11 @@ func run() {
 	}
 
 	doCapture := func() {
-		// Capture creates AppKit windows and pumps events, so it cannot run on
-		// the main thread (the UI action / hotkey callback may already be on the
-		// main thread). Offload the whole flow to a background goroutine.
+		// Capture the frontmost application window silently in the background.
+		// No overlay, no focus change, and Hermes is never in the shot.
 		go func() {
 			cancelAll()
-			// Always let the user select the area. The previously saved region is
-			// passed as the starting seed so the last selection is pre-selected.
-			seed := capture.Rect{}
-			if cfg.Region != nil {
-				seed = capture.Rect{X: cfg.Region.X, Y: cfg.Region.Y, W: cfg.Region.W, H: cfg.Region.H}
-			}
-			r, ok, err := capture.SelectRegion(seed)
-			if err != nil {
-				log.Printf("select region: %v", err)
-				return
-			}
-			if !ok {
-				return
-			}
-			region := &config.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}
-			cfg.Region = region
-			_ = config.Save(cfg)
-
-			img, err := capture.CaptureImage(capture.Rect{X: region.X, Y: region.Y, W: region.W, H: region.H})
+			img, err := capture.CaptureFrontWindow()
 			if err != nil {
 				log.Printf("capture: %v", err)
 				return

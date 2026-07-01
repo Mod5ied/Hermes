@@ -12,6 +12,11 @@ package capture
 // Caller must free *outData with free().
 int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outLen);
 
+// hermes_capture_front_window captures the frontmost on-screen application
+// window (excluding Hermes). On success it sets *outData to a malloc'd PNG
+// buffer and *outLen to its size. Caller must free *outData with free().
+int hermes_capture_front_window(void **outData, size_t *outLen);
+
 // hermes_select_region shows a full-screen selection overlay and returns the
 // selected rectangle in screen points (bottom-left origin, AppKit window space).
 // If the user cancels, width and height are zero.
@@ -113,4 +118,25 @@ func CaptureImage(r Rect) (image.Image, error) {
 		return nil, err
 	}
 	return DecodePNG(data)
+}
+
+// CaptureFrontWindow captures the frontmost on-screen application window
+// (excluding Hermes) and returns it as an image.Image.
+func CaptureFrontWindow() (image.Image, error) {
+	var outData unsafe.Pointer
+	var outLen C.size_t
+
+	ret := C.hermes_capture_front_window(&outData, &outLen)
+	if outData != nil {
+		defer C.free(outData)
+	}
+	if ret != 0 {
+		return nil, fmt.Errorf("front-window capture failed (code %d)", int(ret))
+	}
+	if outLen == 0 {
+		return nil, fmt.Errorf("front-window capture returned empty buffer")
+	}
+
+	buf := C.GoBytes(outData, C.int(outLen))
+	return DecodePNG(buf)
 }
