@@ -1,7 +1,16 @@
 # Build outputs
-/hermes
+/bin/
 /Hermes.app
+
+# Worker dependencies
+/hermes/proxy/
+/hermes/proxy/node_modules/
 /internal/speech/libspeechswift.a
+
+# Root npm artifacts from local wrangler installs
+/package.json
+/pnpm-lock.yaml
+/node_modules/
 
 # Local code-signing keychain and certificates
 /HermesSigning.keychain-db
