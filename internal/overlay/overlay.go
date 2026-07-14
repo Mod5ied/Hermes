@@ -21,6 +21,7 @@ void hermesOverlayFinalizeAnswer(const char *text, int type);
 void hermesOverlaySetIndicator(bool canSend, int clearsInSeconds);
 void hermesOverlaySetPassBalance(bool active, int pct);
 void hermesOverlaySetBusy(bool on);
+void hermesOverlaySetListening(bool on);
 void hermesOverlaySetTrayCount(int n);
 void hermesOverlaySetAnswerCount(int n);
 void hermesOverlayCountdown(int seconds);
@@ -60,6 +61,7 @@ type Overlay interface {
 	SetIndicator(canSend bool, clearsIn time.Duration)
 	SetPassBalance(active bool, pct int)
 	SetBusy(on bool)
+	SetListening(on bool)
 	SetTrayCount(n int)
 	SetAnswerCount(n int)
 	SetStealth(on bool)
@@ -176,6 +178,10 @@ func (o *nativeOverlay) SetPassBalance(active bool, pct int) {
 
 func (o *nativeOverlay) SetBusy(on bool) {
 	C.hermesOverlaySetBusy(C.bool(on))
+}
+
+func (o *nativeOverlay) SetListening(on bool) {
+	C.hermesOverlaySetListening(C.bool(on))
 }
 
 func (o *nativeOverlay) SetTrayCount(n int) {

@@ -1320,6 +1320,13 @@ void hermesOverlaySetBusy(bool on) {
     });
 }
 
+void hermesOverlaySetListening(bool on) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gListening = on ? YES : NO;
+        updateMicButton();
+    });
+}
+
 void hermesOverlaySetTrayCount(int n) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!gTrayBadge) return;

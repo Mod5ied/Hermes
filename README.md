@@ -57,7 +57,7 @@ Click the gear icon in the floating bar to open Settings — General, Provider &
 
 ## Privacy
 
-- Screenshots stay in memory; they are never saved to disk or uploaded anywhere except Groq as part of your question.
+- Screenshots stay in memory; they are never saved to disk or uploaded anywhere except Groq/Cerebras as part of your question.
 - Voice transcription happens on-device.
 - No telemetry or analytics.
 

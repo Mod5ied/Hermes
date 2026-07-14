@@ -267,12 +267,20 @@ func run() {
 
 	doListenToggle := func(on bool) {
 		if on {
-			if err := transcriber.Start(func(r speech.Result) {
-				ovl.SetInstruction(r.Text, !r.Final)
-			}); err != nil {
-				log.Printf("speech: %v", err)
-				listening = false
-			}
+			// Start capture on a background goroutine; ScreenCaptureKit setup
+			// may block waiting for the main run loop, so we must not hold the
+			// UI thread.
+			go func() {
+				if err := transcriber.Start(func(r speech.Result) {
+					ovl.SetInstruction(r.Text, !r.Final)
+				}); err != nil {
+					log.Printf("speech: %v", err)
+					listening = false
+					ovl.SetListening(false)
+					ovl.Flash("Couldn't capture call audio, try again.")
+					return
+				}
+			}()
 		} else {
 			_ = transcriber.Stop()
 		}

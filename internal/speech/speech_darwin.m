@@ -79,31 +79,35 @@ extern void hermes_speech_analyzer_reset(void);
 static SFSpeechRecognizer *gRecognizer = nil;
 static SFSpeechAudioBufferRecognitionRequest *gRequest = nil;
 static SFSpeechRecognitionTask *gTask = nil;
-static AVAudioEngine *gEngine = nil;
 static SCStream *gStream = nil;
 static HermesSpeechOutput *gOutput = nil;
 static dispatch_queue_t gAudioQueue = nil;
 static BOOL gUsingAnalyzer = NO;
 
-static void startMicrophoneFallback(void) {
-    gEngine = [[AVAudioEngine alloc] init];
-    AVAudioInputNode *input = gEngine.inputNode;
-    AVAudioFormat *fmt = [input outputFormatForBus:0];
-    [input installTapOnBus:0 bufferSize:4096 format:fmt block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
-        if (gRequest) [gRequest appendAudioPCMBuffer:buffer];
-    }];
-    [gEngine startAndReturnError:nil];
+static void runLoopWait(dispatch_semaphore_t sem) {
+    // If we are on the main thread, the dispatch queue we are waiting on is
+    // serviced by the same run loop. Pump it so the async block runs. On a
+    // background thread a plain wait is enough.
+    if ([NSThread isMainThread]) {
+        while (dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW)) {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                     beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+    } else {
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    }
 }
 
-static void startSCStream(HermesSpeechOutput *output, BOOL allowMicFallback) {
+static int setupSCStream(HermesSpeechOutput *output) {
+    __block int result = 0;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
         if (error || content.displays.count == 0) {
-            if (allowMicFallback) {
-                startMicrophoneFallback();
-            } else {
-                fprintf(stderr, "[Hermes Speech] SCStream unavailable for analyzer; stopping.\n");
-                hermes_speech_stop();
-            }
+            fprintf(stderr, "[Hermes Speech] SCStream unavailable: %s\n",
+                    error ? [[error localizedDescription] UTF8String] : "no displays");
+            result = -2;
+            dispatch_semaphore_signal(sem);
             return;
         }
         SCDisplay *display = content.displays[0];
@@ -121,25 +125,24 @@ static void startSCStream(HermesSpeechOutput *output, BOOL allowMicFallback) {
               sampleHandlerQueue:gAudioQueue
                            error:&addErr];
         if (addErr) {
-            if (allowMicFallback) {
-                startMicrophoneFallback();
-            } else {
-                fprintf(stderr, "[Hermes Speech] SCStream addOutput failed for analyzer; stopping.\n");
-                hermes_speech_stop();
-            }
+            fprintf(stderr, "[Hermes Speech] SCStream addOutput failed: %s\n",
+                    [[addErr localizedDescription] UTF8String]);
+            result = -3;
+            dispatch_semaphore_signal(sem);
             return;
         }
         [gStream startCaptureWithCompletionHandler:^(NSError *err) {
             if (err) {
-                if (allowMicFallback) {
-                    startMicrophoneFallback();
-                } else {
-                    fprintf(stderr, "[Hermes Speech] SCStream start failed for analyzer; stopping.\n");
-                    hermes_speech_stop();
-                }
+                fprintf(stderr, "[Hermes Speech] SCStream start failed: %s\n",
+                        [[err localizedDescription] UTF8String]);
+                result = -4;
             }
+            dispatch_semaphore_signal(sem);
         }];
     }];
+
+    runLoopWait(sem);
+    return result;
 }
 
 int hermes_speech_start(const char *locale) {
@@ -162,9 +165,19 @@ int hermes_speech_start(const char *locale) {
                 gOutput.sampleRate = 16000.0;
                 gOutput.channels = 1;
 
+                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    startSCStream(gOutput, NO);
+                    int setupResult = setupSCStream(gOutput);
+                    if (setupResult != 0) {
+                        hermes_speech_stop();
+                    }
+                    dispatch_semaphore_signal(sem);
                 });
+                runLoopWait(sem);
+
+                if (!gStream) {
+                    return -10;
+                }
                 return 0;
             }
             fprintf(stderr, "[Hermes Speech] SpeechAnalyzer start failed (%d), falling back\n", ret);
@@ -201,10 +214,19 @@ int hermes_speech_start(const char *locale) {
     gOutput.sampleRate = 16000.0;
     gOutput.channels = 1;
 
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{
-        startSCStream(gOutput, YES);
+        int setupResult = setupSCStream(gOutput);
+        if (setupResult != 0) {
+            hermes_speech_stop();
+        }
+        dispatch_semaphore_signal(sem);
     });
+    runLoopWait(sem);
 
+    if (!gStream) {
+        return -11;
+    }
     return 0;
 }
 
@@ -239,10 +261,5 @@ void hermes_speech_stop(void) {
     }
     gRequest = nil;
     gOutput = nil;
-    if (gEngine) {
-        [gEngine stop];
-        [gEngine.inputNode removeTapOnBus:0];
-        gEngine = nil;
-    }
     gRecognizer = nil;
 }
