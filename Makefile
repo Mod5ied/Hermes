@@ -1,6 +1,6 @@
 .PHONY: build run test clean deps sign-adhoc bundle cert
 
-APP=hermes
+APP=bin/hermes
 BUNDLE=Hermes.app
 SPEECH_SWIFT=internal/speech/libspeechswift.a
 
@@ -26,6 +26,7 @@ $(SPEECH_SWIFT): internal/speech/speech_analyzer.swift
 	swiftc -target arm64-apple-macosx26.0 -emit-library -static -o $@ $<
 
 build: $(SPEECH_SWIFT)
+	@mkdir -p bin
 	go build -o $(APP) ./cmd/hermes
 
 bundle: build
@@ -54,7 +55,7 @@ test:
 	go test ./...
 
 clean:
-	rm -f $(APP)
+	rm -rf bin
 	rm -rf $(BUNDLE)
 
 deps:

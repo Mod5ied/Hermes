@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/hermes/hermes/internal/config"
+	"github.com/hermes/hermes/internal/pass"
 	"github.com/hermes/hermes/internal/ratelimit"
 )
 
@@ -82,6 +83,28 @@ func NewCerebras(cfg config.Config) Client {
 		apiKey: cfg.APIKey,
 		base:   base,
 		model:  cfg.Model,
+	}
+}
+
+// New builds the right client for the current credentials.
+// BYOK takes precedence; otherwise a Hermes Pass is used.
+func New(cfg config.Config, onBalance func(int)) Client {
+	if cfg.APIKey != "" {
+		switch cfg.Provider {
+		case config.ProviderCerebras:
+			return NewCerebras(cfg)
+		default:
+			return NewGroq(cfg)
+		}
+	}
+	if cfg.PassActive || pass.Active() {
+		return NewProxy(cfg, onBalance)
+	}
+	switch cfg.Provider {
+	case config.ProviderCerebras:
+		return NewCerebras(cfg)
+	default:
+		return NewGroq(cfg)
 	}
 }
 

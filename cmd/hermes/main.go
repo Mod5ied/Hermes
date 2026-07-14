@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"github.com/hermes/hermes/internal/hotkey"
 	"github.com/hermes/hermes/internal/llm"
 	"github.com/hermes/hermes/internal/overlay"
+	"github.com/hermes/hermes/internal/pass"
 	"github.com/hermes/hermes/internal/permissions"
 	"github.com/hermes/hermes/internal/ratelimit"
 	"github.com/hermes/hermes/internal/session"
@@ -46,7 +48,10 @@ func run() {
 	}
 
 	config.ApplyProviderDefaults(&cfg)
-	client := newClient(cfg)
+
+	var passBalancePct int
+	var onPassBalance func(int)
+
 	thread := session.NewThreadFromConfig(cfg)
 	tracker := ratelimit.NewTracker(cfg.Model)
 	typerEngine := typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
@@ -54,6 +59,37 @@ func run() {
 	transcriber := speech.New(cfg.SpeechLocale)
 	ovl := overlay.New(cfg)
 	permissions.EnsureAll()
+	ovl.SetOpacity(cfg.OverlayOpacity)
+
+	onPassBalance = func(pct int) {
+		passBalancePct = pct
+		ovl.SetPassBalance(true, pct)
+	}
+
+	// Refresh the pass balance on startup so pass mode survives app restarts.
+	if cfg.PassActive || pass.Active() {
+		if pk, err := pass.PassKey(); err == nil && pk != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			act, err := pass.Activate(ctx, pass.ResolveWorkerURL(cfg), pk)
+			cancel()
+			if err == nil {
+				passBalancePct = act.BalancePct
+				cfg.PassActive = true
+				ovl.SetPassBalance(true, act.BalancePct)
+			} else {
+				log.Printf("startup pass refresh: %v", err)
+				if !pass.Active() {
+					cfg.PassActive = false
+					_ = pass.Clear()
+				}
+			}
+		} else {
+			cfg.PassActive = false
+			_ = pass.Clear()
+		}
+	}
+
+	client := newClient(cfg, onPassBalance)
 
 	var answerBuffer string
 	var typing bool
@@ -104,6 +140,10 @@ func run() {
 	}
 
 	updateIndicator := func() {
+		if cfg.PassActive {
+			ovl.SetPassBalance(passBalancePct > 0, passBalancePct)
+			return
+		}
 		if cfg.APIKey == "" {
 			ovl.SetIndicator(false, 0)
 			return
@@ -148,6 +188,10 @@ func run() {
 			ovl.AppendAnswer("\n" + err.Error())
 			return
 		}
+		if cfg.PassActive && passBalancePct <= 0 {
+			ovl.AppendAnswer("\nPass used up, top up to continue.")
+			return
+		}
 
 		instruction := ovl.Instruction()
 		vision := config.IsVisionModel(cfg.Provider, cfg.Model)
@@ -159,12 +203,14 @@ func run() {
 			return
 		}
 
-		est := ratelimit.EstimateTokens(thread.SystemPrompt(), instruction, tray.Count())
-		ok, clearsIn, reason := tracker.CanSend(est)
-		if !ok {
-			ovl.SetIndicator(false, clearsIn)
-			ovl.AppendAnswer("\nRate limited: " + reason + ". Retry in " + ratelimit.FormatDuration(clearsIn))
-			return
+		if !cfg.PassActive {
+			est := ratelimit.EstimateTokens(thread.SystemPrompt(), instruction, tray.Count())
+			ok, clearsIn, reason := tracker.CanSend(est)
+			if !ok {
+				ovl.SetIndicator(false, clearsIn)
+				ovl.AppendAnswer("\nRate limited: " + reason + ". Retry in " + ratelimit.FormatDuration(clearsIn))
+				return
+			}
 		}
 
 		current := session.Turn{
@@ -172,7 +218,9 @@ func run() {
 			ImageDataURLs: tray.Shots(),
 		}
 		msgs := thread.Build(current, vision)
-		tracker.RecordSend()
+		if !cfg.PassActive {
+			tracker.RecordSend()
+		}
 		ovl.SetBusy(true)
 		ovl.BeginAnswer()
 
@@ -248,7 +296,8 @@ func run() {
 		doListenToggle(on)
 	})
 	ovl.OnSettings(func() {
-		overlay.ShowSettings(cfg)
+		pk, _ := pass.PassKey()
+		overlay.ShowSettings(cfg, pk, pass.Active(), passBalancePct)
 	})
 	updateVisionUI := func() {
 		vision := config.IsVisionModel(cfg.Provider, cfg.Model)
@@ -260,7 +309,14 @@ func run() {
 		}
 	}
 
-	ovl.OnSettingsSaved(func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
+	ovl.OnOpacityChanged(func(pct int) {
+		cfg.OverlayOpacity = pct
+		if err := config.Save(cfg); err != nil {
+			log.Printf("save opacity: %v", err)
+		}
+	})
+
+	ovl.OnSettingsSaved(func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string) {
 		if cfg.APIKeys == nil {
 			cfg.APIKeys = map[string]string{}
 		}
@@ -273,15 +329,38 @@ func run() {
 		cfg.BaseDelay = delay
 		cfg.ResumeProfile = resumeProfile
 		cfg.SpeechLocale = speechLocale
+
+		if passKey != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			act, err := pass.Activate(ctx, pass.ResolveWorkerURL(cfg), passKey)
+			cancel()
+			if err != nil {
+				cfg.PassActive = false
+				_ = pass.Clear()
+				log.Printf("pass activation: %v", err)
+				ovl.Flash("Pass activation failed: " + err.Error())
+			} else {
+				cfg.PassActive = true
+				passBalancePct = act.BalancePct
+				ovl.SetPassBalance(true, act.BalancePct)
+				ovl.Flash(fmt.Sprintf("Pass active - %d%%", act.BalancePct))
+			}
+		} else if cfg.PassActive {
+			cfg.PassActive = false
+			passBalancePct = 0
+			_ = pass.Clear()
+		}
+
 		config.ApplyProviderDefaults(&cfg)
 		if err := config.Save(cfg); err != nil {
 			log.Printf("save settings: %v", err)
 		}
-		client = newClient(cfg)
+		client = newClient(cfg, onPassBalance)
 		thread = session.NewThreadFromConfig(cfg)
 		typerEngine = typer.New(typer.Options{BaseDelay: cfg.BaseDelay, Humanise: cfg.Humanise})
 		ovl.SetStealth(cfg.Stealth)
 		updateVisionUI()
+		updateIndicator()
 	})
 	ovl.OnType(doType)
 	ovl.OnTypeReady(func() {
@@ -309,7 +388,7 @@ func run() {
 
 	updateVisionUI()
 
-	// Hotkeys — register off the main goroutine. golang.design/x/hotkey
+	// Hotkeys - register off the main goroutine. golang.design/x/hotkey
 	// internally dispatch_sync()s to the main queue to install its event tap.
 	// If we call that from the main thread before [NSApp run] starts, GCD can
 	// deadlock or abort. Running registration from a background goroutine lets
@@ -355,11 +434,6 @@ func run() {
 	log.Printf("NSApp run loop exited")
 }
 
-func newClient(cfg config.Config) llm.Client {
-	switch cfg.Provider {
-	case config.ProviderCerebras:
-		return llm.NewCerebras(cfg)
-	default:
-		return llm.NewGroq(cfg)
-	}
+func newClient(cfg config.Config, onBalance func(int)) llm.Client {
+	return llm.New(cfg, onBalance)
 }

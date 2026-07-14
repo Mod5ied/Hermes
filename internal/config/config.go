@@ -80,10 +80,13 @@ type Config struct {
 	Humanise      bool              `json:"humanise"`
 	BaseDelay     time.Duration     `json:"base_delay_ms"`
 	Region        *Rect             `json:"region,omitempty"`
-	ContextTurns  int               `json:"context_turns"`
-	ImageWindow   int               `json:"image_window"`
-	SpeechLocale  string            `json:"speech_locale"`
-	ResumeProfile string            `json:"resume_profile"`
+	ContextTurns   int               `json:"context_turns"`
+	ImageWindow    int               `json:"image_window"`
+	SpeechLocale   string            `json:"speech_locale"`
+	ResumeProfile  string            `json:"resume_profile"`
+	WorkerURL      string            `json:"worker_url,omitempty"`
+	PassActive     bool              `json:"pass_active,omitempty"`
+	OverlayOpacity int               `json:"overlay_opacity"`
 }
 
 // Default returns a Config populated with defaults.
@@ -95,9 +98,11 @@ func Default() Config {
 		Stealth:      true,
 		Humanise:     true,
 		BaseDelay:    90 * time.Millisecond,
-		ContextTurns: 4,
-		ImageWindow:  1,
-		SpeechLocale: "",
+		ContextTurns:   4,
+		ImageWindow:    1,
+		SpeechLocale:   "",
+		WorkerURL:      "https://hermes-proxy.ogwurup.workers.dev",
+		OverlayOpacity: 85,
 	}
 }
 
@@ -207,6 +212,12 @@ func Load() (Config, error) {
 	if cfg.ImageWindow < 0 || cfg.ImageWindow > 5 {
 		cfg.ImageWindow = 1
 	}
+	if cfg.OverlayOpacity < 20 {
+		cfg.OverlayOpacity = 20
+	}
+	if cfg.OverlayOpacity > 100 {
+		cfg.OverlayOpacity = 100
+	}
 
 	if key := os.Getenv(APIKeyEnv); key != "" {
 		cfg.APIKey = key
@@ -246,8 +257,11 @@ func Save(c Config) error {
 
 // ValidateSend returns an error if the app is not allowed to send a request.
 func (c Config) ValidateSend() error {
+	if c.PassActive {
+		return nil
+	}
 	if c.APIKey == "" {
-		return fmt.Errorf("%s API key is not set. Add it in Settings or set %s", c.Provider, APIKeyEnv)
+		return fmt.Errorf("%s API key is not set. Add it in Settings, set a Hermes Pass, or set %s", c.Provider, APIKeyEnv)
 	}
 	return nil
 }

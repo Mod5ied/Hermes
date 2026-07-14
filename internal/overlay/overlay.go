@@ -11,6 +11,7 @@ void hermesOverlayInit(bool stealth);
 void hermesOverlayShow(void);
 void hermesOverlayHide(void);
 void hermesOverlaySetStealth(bool on);
+void hermesOverlaySetOpacity(int pct);
 void hermesOverlaySetInstruction(const char *text);
 char *hermesOverlayGetInstruction(void);
 void hermesOverlayAppendInstruction(const char *text, bool final);
@@ -18,6 +19,7 @@ void hermesOverlayBeginAnswer(void);
 void hermesOverlayAppendAnswer(const char *delta);
 void hermesOverlayFinalizeAnswer(const char *text, int type);
 void hermesOverlaySetIndicator(bool canSend, int clearsInSeconds);
+void hermesOverlaySetPassBalance(bool active, int pct);
 void hermesOverlaySetBusy(bool on);
 void hermesOverlaySetTrayCount(int n);
 void hermesOverlaySetAnswerCount(int n);
@@ -25,7 +27,7 @@ void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
 void hermesOverlayFreeString(char *s);
 void hermesOverlayRun(void);
-void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale);
+void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale, const char *passKey, bool passActive, int passPct, int opacity);
 void hermesOverlaySetModelNote(const char *msg);
 void hermesOverlaySetCaptureEnabled(bool enabled);
 void hermesOverlayHideSettings(void);
@@ -56,10 +58,13 @@ type Overlay interface {
 	SetInstruction(text string, volatile bool)
 	Countdown(seconds int)
 	SetIndicator(canSend bool, clearsIn time.Duration)
+	SetPassBalance(active bool, pct int)
 	SetBusy(on bool)
 	SetTrayCount(n int)
 	SetAnswerCount(n int)
 	SetStealth(on bool)
+	SetOpacity(pct int)
+	OnOpacityChanged(handler func(pct int))
 	OnCapture(handler func())
 	OnSend(handler func())
 	OnNewSession(handler func())
@@ -67,7 +72,7 @@ type Overlay interface {
 	OnSettings(handler func())
 	OnType(handler func())
 	OnTypeReady(handler func())
-	OnSettingsSaved(handler func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
+	OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
 	SetModelNote(msg string)
 	SetCaptureEnabled(enabled bool)
 	OnHistoryEnter(handler func())
@@ -113,7 +118,8 @@ type nativeOverlay struct {
 	onSettings     func()
 	onType         func()
 	onTypeReady    func()
-	onSettingsSaved func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onSettingsSaved func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onOpacityChanged func(pct int)
 	onHistoryEnter func()
 	onHistoryPrev  func()
 	onHistoryNext  func()
@@ -164,6 +170,10 @@ func (o *nativeOverlay) SetIndicator(canSend bool, clearsIn time.Duration) {
 	C.hermesOverlaySetIndicator(C.bool(canSend), C.int(secs))
 }
 
+func (o *nativeOverlay) SetPassBalance(active bool, pct int) {
+	C.hermesOverlaySetPassBalance(C.bool(active), C.int(pct))
+}
+
 func (o *nativeOverlay) SetBusy(on bool) {
 	C.hermesOverlaySetBusy(C.bool(on))
 }
@@ -178,6 +188,14 @@ func (o *nativeOverlay) SetAnswerCount(n int) {
 
 func (o *nativeOverlay) SetStealth(on bool) {
 	C.hermesOverlaySetStealth(C.bool(on))
+}
+
+func (o *nativeOverlay) SetOpacity(pct int) {
+	C.hermesOverlaySetOpacity(C.int(pct))
+}
+
+func (o *nativeOverlay) OnOpacityChanged(handler func(pct int)) {
+	o.onOpacityChanged = handler
 }
 
 func (o *nativeOverlay) OnCapture(handler func()) {
@@ -208,7 +226,7 @@ func (o *nativeOverlay) OnTypeReady(handler func()) {
 	o.onTypeReady = handler
 }
 
-func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
+func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
 	o.onSettingsSaved = handler
 }
 
@@ -289,15 +307,17 @@ func (o *nativeOverlay) Move(dx, dy int) {
 }
 
 // ShowSettings opens the native settings window.
-func ShowSettings(cfg config.Config) {
+func ShowSettings(cfg config.Config, passKey string, passActive bool, passPct int) {
 	cKey := C.CString(cfg.APIKey)
 	cModel := C.CString(cfg.Model)
 	cProfile := C.CString(cfg.ResumeProfile)
 	cLocale := C.CString(cfg.SpeechLocale)
+	cPassKey := C.CString(passKey)
 	defer C.free(unsafe.Pointer(cKey))
 	defer C.free(unsafe.Pointer(cModel))
 	defer C.free(unsafe.Pointer(cProfile))
 	defer C.free(unsafe.Pointer(cLocale))
+	defer C.free(unsafe.Pointer(cPassKey))
 
 	cProvider := C.CString(cfg.Provider)
 	defer C.free(unsafe.Pointer(cProvider))
@@ -312,7 +332,7 @@ func ShowSettings(cfg config.Config) {
 	defer C.free(unsafe.Pointer(cPayloadJSON))
 
 	C.hermesOverlayShowSettings(cKey, cProvider, cModel, cPayloadJSON, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
-		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale)
+		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale, cPassKey, C.bool(passActive), C.int(passPct), C.int(cfg.OverlayOpacity))
 }
 
 //export hermesOverlayOnCapture
@@ -400,10 +420,11 @@ func hermesOverlayOnHistoryExit() {
 }
 
 //export hermesOverlayOnSettingsSaved
-func hermesOverlayOnSettingsSaved(apiKey *C.char, provider *C.char, model *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
+func hermesOverlayOnSettingsSaved(apiKey *C.char, passKey *C.char, provider *C.char, model *C.char, stealth C.int, humanise C.int, delayMs C.int, resumeProfile *C.char, speechLocale *C.char) {
 	if currentOverlay != nil && currentOverlay.onSettingsSaved != nil {
 		currentOverlay.onSettingsSaved(
 			C.GoString(apiKey),
+			C.GoString(passKey),
 			C.GoString(provider),
 			C.GoString(model),
 			stealth != 0,
@@ -412,6 +433,13 @@ func hermesOverlayOnSettingsSaved(apiKey *C.char, provider *C.char, model *C.cha
 			C.GoString(resumeProfile),
 			C.GoString(speechLocale),
 		)
+	}
+}
+
+//export hermesOverlayOnOpacityChanged
+func hermesOverlayOnOpacityChanged(pct C.int) {
+	if currentOverlay != nil && currentOverlay.onOpacityChanged != nil {
+		currentOverlay.onOpacityChanged(int(pct))
 	}
 }
 

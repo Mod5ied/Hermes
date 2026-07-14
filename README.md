@@ -14,6 +14,9 @@ No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 - **Auto-type**: Press `CMD+T` or click the type button; after a visible 5-second countdown, Hermes types the answer into the field you are focused on.
 - **Rate-limit guard**: A small dot on the bar shows when it is safe to send and counts down if you hit a limit.
 - **Resume profile**: Paste a resume or JSON profile so answers sound like they come from you.
+- **Hermes Pass**: No API key handy? Activate a prepaid Pass in Settings for shared-key access instead of BYOK.
+- **Overlay opacity**: Dial how visible the command bar is to your own eyes, independent of Stealth.
+- **Update check**: Settings checks GitHub Releases once on open and tells you if you're current.
 
 ---
 
@@ -45,7 +48,7 @@ The first time you run Hermes you will be asked to grant **Screen Recording**, *
 | `CMD+L` | Start/stop listening to the call |
 | `Esc` | Cancel the countdown or stop typing |
 
-Click the gear icon in the floating bar to add your API key, adjust typing speed, and paste your resume.
+Click the gear icon in the floating bar to open Settings — General, Provider & Model, Pass, Resume, Speech, Hotkeys, and About. Add your API key or a Pass, adjust typing speed and overlay opacity, paste your resume, and check for updates.
 
 ---
 

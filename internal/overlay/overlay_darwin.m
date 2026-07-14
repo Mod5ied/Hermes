@@ -5,20 +5,23 @@
 #include <ctype.h>
 #include "_cgo_export.h"
 
+@class HermesAudioLinesView;
+
 static NSPanel *gPanel = nil;
 static NSPanel *gAnswerWindow = nil;
 static NSWindow *gSettingsWindow;
 static NSTextField *gInput = nil;
 static NSTextView *gAnswer = nil;
+static NSView *gAnswerBody = nil;
 static NSScrollView *gAnswerScroll = nil;
 static NSBox *gAnswerPanel = nil;
 static NSTextField *gCountdown = nil;
 static NSTextField *gModelNote = nil;
 static NSView *gIndicatorDot = nil;
-static NSTextField *gIndicatorLabel = nil;
 static NSProgressIndicator *gSpinner = nil;
 static NSTextField *gTrayBadge = nil;
 static NSButton *gMicButton = nil;
+static HermesAudioLinesView *gAudioLinesView = nil;
 static NSButton *gTypeButton = nil;
 static NSTextField *gTypeBadge = nil;
 static NSButton *gCaptureButton = nil;
@@ -29,7 +32,6 @@ static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
 static NSButton *gPinButton = nil;
 static NSTextField *gAnswerHeader = nil;
-static NSTextField *gCodeTag = nil;
 static NSTextField *gHistoryPosition = nil;
 
 static BOOL gStealth = YES;
@@ -55,7 +57,7 @@ static void onMain(void (^block)(void)) {
     else dispatch_async(dispatch_get_main_queue(), block);
 }
 
-static const CGFloat kBarHeight = 58.0;
+static const CGFloat kBarHeight = 46.0;
 static const CGFloat kBarWidth = 688.0;
 
 @interface HermesOverlayView : NSView
@@ -67,10 +69,129 @@ static const CGFloat kBarWidth = 688.0;
 }
 @end
 
-@interface HermesOverlayPanel : NSPanel
+// HermesToolsCapsule: the right-hand capsule of the segmented bar. Purely
+// cosmetic hover per TASK.md ("Segmented layout") -- lightens on mouse-over,
+// no click handling of its own (button subviews keep their own targets).
+@interface HermesToolsCapsule : HermesOverlayView
+@property (nonatomic, strong) NSColor *baseColor;
+@property (nonatomic, strong) NSColor *hoverColor;
+@property (nonatomic, strong) NSTrackingArea *trackingArea;
+@end
+
+@implementation HermesToolsCapsule
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.trackingArea) [self removeTrackingArea:self.trackingArea];
+    NSTrackingAreaOptions opts = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways;
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds options:opts owner:self userInfo:nil];
+    [self addTrackingArea:self.trackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    if (self.hoverColor) self.layer.backgroundColor = self.hoverColor.CGColor;
+}
+- (void)mouseExited:(NSEvent *)event {
+    if (self.baseColor) self.layer.backgroundColor = self.baseColor.CGColor;
+}
+@end
+
+// HermesAudioLinesView: a small animated equalizer-bar glyph swapped in for
+// the mic icon while listening, in place of a static "mic.fill" icon.
+@interface HermesAudioLinesView : NSView
+@property (nonatomic, strong) NSArray<CALayer *> *bars;
+@end
+
+@implementation HermesAudioLinesView
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        static const CGFloat heights[5] = {6.0, 11.0, 15.0, 9.0, 5.0};
+        CGFloat barWidth = 2.4;
+        CGFloat gap = 2.2;
+        NSInteger count = 5;
+        CGFloat totalWidth = count * barWidth + (count - 1) * gap;
+        CGFloat startX = (frameRect.size.width - totalWidth) / 2.0;
+        NSMutableArray<CALayer *> *bars = [NSMutableArray array];
+        for (NSInteger i = 0; i < count; i++) {
+            CALayer *bar = [CALayer layer];
+            CGFloat h = heights[i];
+            bar.bounds = CGRectMake(0, 0, barWidth, h);
+            bar.position = CGPointMake(startX + i * (barWidth + gap) + barWidth / 2.0, frameRect.size.height / 2.0);
+            bar.cornerRadius = barWidth / 2.0;
+            bar.backgroundColor = [NSColor whiteColor].CGColor;
+            [self.layer addSublayer:bar];
+            [bars addObject:bar];
+        }
+        self.bars = bars;
+    }
+    return self;
+}
+- (void)startAnimating {
+    NSInteger i = 0;
+    for (CALayer *bar in self.bars) {
+        if ([bar animationForKey:@"pulse"]) { i++; continue; }
+        CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"transform.scale.y"];
+        anim.fromValue = @0.35;
+        anim.toValue = @1.0;
+        anim.duration = 0.32 + (i % 3) * 0.11;
+        anim.autoreverses = YES;
+        anim.repeatCount = HUGE_VALF;
+        anim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [bar addAnimation:anim forKey:@"pulse"];
+        i++;
+    }
+}
+- (void)stopAnimating {
+    for (CALayer *bar in self.bars) [bar removeAnimationForKey:@"pulse"];
+}
+@end
+
+// HermesInputFieldCell vertically centers the typed/placeholder text inside
+// the field's bounds; the stock NSTextFieldCell only centers correctly when
+// the field's height happens to equal the font's natural line height.
+@interface HermesInputFieldCell : NSTextFieldCell
+@end
+
+@implementation HermesInputFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)theRect {
+    NSRect rect = [super drawingRectForBounds:theRect];
+    NSSize textSize = [self cellSizeForBounds:theRect];
+    CGFloat delta = rect.size.height - textSize.height;
+    if (delta > 0) {
+        rect.size.height -= delta;
+        rect.origin.y += delta / 2.0;
+    }
+    return rect;
+}
+@end
+
+// HermesInputField: no border and no focus ring in any state, just text
+// directly on the capsule surface.
+@interface HermesInputField : NSTextField
+@end
+
+@implementation HermesInputField
++ (Class)cellClass {
+    return [HermesInputFieldCell class];
+}
+@end
+
+static void updateAnswerWindowPosition(void);
+
+@interface HermesOverlayPanel : NSPanel <NSWindowDelegate>
 @end
 
 @implementation HermesOverlayPanel
+- (instancetype)initWithContentRect:(NSRect)contentRect
+                           styleMask:(NSWindowStyleMask)style
+                             backing:(NSBackingStoreType)bufferingType
+                               defer:(BOOL)flag {
+    self = [super initWithContentRect:contentRect styleMask:style backing:bufferingType defer:flag];
+    if (self) {
+        self.delegate = self;
+    }
+    return self;
+}
 - (BOOL)canBecomeKeyWindow {
     return YES;
 }
@@ -82,6 +203,10 @@ static const CGFloat kBarWidth = 688.0;
     // Accessory-policy apps must be explicitly activated or the key window
     // will not receive keystrokes.
     [NSApp activateIgnoringOtherApps:YES];
+}
+- (void)windowDidMove:(NSNotification *)notification {
+    // Keep the answer window docked under the bar while it's dragged.
+    updateAnswerWindowPosition();
 }
 @end
 
@@ -172,12 +297,22 @@ static NSButton *makeIconButton(NSString *name, NSString *tip, SEL action) {
 }
 
 static NSColor *hermesAmber(void);
-static NSColor *softAmber(void);
 
 static void updateMicButton(void) {
-    NSString *name = gListening ? @"mic.fill" : @"mic";
-    [gMicButton setImage:sfIcon(name, @"Toggle Listen (CMD+L)")];
-    [gMicButton setContentTintColor:gListening ? softAmber() : [NSColor whiteColor]];
+    if (gListening) {
+        [gMicButton setImage:nil];
+        if (gAudioLinesView) {
+            [gAudioLinesView setHidden:NO];
+            [gAudioLinesView startAnimating];
+        }
+    } else {
+        [gMicButton setImage:sfIcon(@"mic", @"Toggle Listen (CMD+L)")];
+        [gMicButton setContentTintColor:[NSColor whiteColor]];
+        if (gAudioLinesView) {
+            [gAudioLinesView stopAnimating];
+            [gAudioLinesView setHidden:YES];
+        }
+    }
 }
 
 static NSView *makeDot(NSColor *color) {
@@ -190,10 +325,6 @@ static NSView *makeDot(NSColor *color) {
 
 static NSColor *hermesAmber(void) {
     return [NSColor colorWithCalibratedRed:1.0 green:0.65 blue:0.0 alpha:1.0];
-}
-
-static NSColor *softAmber(void) {
-    return [NSColor colorWithCalibratedRed:1.0 green:0.78 blue:0.35 alpha:1.0];
 }
 
 
@@ -220,49 +351,105 @@ void hermesOverlayInit(bool stealth) {
     [panel setLevel:NSFloatingWindowLevel];
     [panel setIgnoresMouseEvents:NO];
     [panel setHidesOnDeactivate:NO];
+    [panel setMovableByWindowBackground:YES];
 
     NSView *root = [[HermesOverlayView alloc] initWithFrame:NSMakeRect(0, 0, kBarWidth, kBarHeight)];
     [root setWantsLayer:YES];
-    root.layer.cornerRadius = 10.0;
-    root.layer.masksToBounds = YES;
-    root.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.12 alpha:0.92].CGColor;
+    root.layer.backgroundColor = [NSColor clearColor].CGColor;
     [panel setContentView:root];
 
-    // Make the window background clear so the rounded content view defines the shape.
+    // Make the window background clear so the two rounded capsules define the shape.
     [panel setBackgroundColor:[NSColor clearColor]];
 
     static const CGFloat kOuterPad = 8.0;
     static const CGFloat kIconSize = 28.0;
     static const CGFloat kIconGap = 6.0;
-    static const CGFloat kInputHeight = 28.0;
+    // Segmented layout (TASK.md): the bar is two capsules, not one strip.
+    static const CGFloat kCapsuleGap = 8.0;   // gap between the two capsules
+    static const CGFloat kToolsPadX = 9.0;    // horizontal padding inside the tools capsule
+    static const CGFloat kToolsGap = 7.0;     // gap between the tools capsule's icons
+    static const NSInteger kToolCount = 4;    // Capture, Attachments, History, Settings
+    // The old single-strip bar's 10pt radius reads boxy once split into two
+    // short capsules; the reference (HTML.md, 26px on a ~54pt-tall segment)
+    // is a true pill/stadium shape, so match that ratio against our own
+    // height instead of literally reusing the old flat-bar constant.
+    static const CGFloat kCapsuleRadius = kBarHeight / 2.0;
 
-    // Six icon buttons (mic, type, capture, clip, history, gear) with seven
-    // evenly-sized gaps around the input field. Compute input width so the bar
-    // fills its frame with no dead space on the right.
-    CGFloat inputWidth = kBarWidth - 2*kOuterPad - 6*kIconSize - 7*kIconGap;
+    CGFloat toolsWidth = kToolsPadX * 2 + kToolCount * kIconSize + (kToolCount - 1) * kToolsGap;
+    CGFloat composeWidth = kBarWidth - kCapsuleGap - toolsWidth;
+    NSColor *glassColor = [NSColor colorWithCalibratedWhite:0.12 alpha:0.92];
 
+    HermesOverlayView *composeCapsule = [[HermesOverlayView alloc] initWithFrame:NSMakeRect(0, 0, composeWidth, kBarHeight)];
+    [composeCapsule setWantsLayer:YES];
+    composeCapsule.layer.cornerRadius = kCapsuleRadius;
+    composeCapsule.layer.masksToBounds = YES;
+    composeCapsule.layer.backgroundColor = glassColor.CGColor;
+    [root addSubview:composeCapsule];
+
+    HermesToolsCapsule *toolsCapsule = [[HermesToolsCapsule alloc] initWithFrame:NSMakeRect(composeWidth + kCapsuleGap, 0, toolsWidth, kBarHeight)];
+    [toolsCapsule setWantsLayer:YES];
+    toolsCapsule.layer.cornerRadius = kCapsuleRadius;
+    toolsCapsule.layer.masksToBounds = YES;
+    toolsCapsule.baseColor = glassColor;
+    toolsCapsule.hoverColor = [NSColor colorWithCalibratedWhite:0.20 alpha:0.94];
+    toolsCapsule.layer.backgroundColor = glassColor.CGColor;
+    [root addSubview:toolsCapsule];
+
+    // ---- Compose capsule: mic, input field, rate-limit status cluster ----
     CGFloat xpos = kOuterPad;
     CGFloat ypos = (kBarHeight - kIconSize) / 2.0;
 
     gMicButton = makeIconButton(@"mic", @"Toggle Listen (CMD+L)", @selector(onMic:));
     [gMicButton setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:gMicButton];
+    [composeCapsule addSubview:gMicButton];
+
+    // Animated equalizer glyph, overlaid on the mic button and shown instead
+    // of its icon while listening (see updateMicButton). Inset a couple
+    // points from the mic circle's own frame so the glyph reads slightly
+    // smaller than a full mic icon would.
+    gAudioLinesView = [[HermesAudioLinesView alloc] initWithFrame:NSInsetRect(NSMakeRect(xpos, ypos, kIconSize, kIconSize), 1.5, 1.5)];
+    [gAudioLinesView setHidden:YES];
+    [composeCapsule addSubview:gAudioLinesView];
     xpos += kIconSize + kIconGap;
 
-    NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos, ypos, inputWidth, kInputHeight)];
+    // Status cluster (spinner + rate-limit dot) is reserved space at the far
+    // right of the capsule, not overlaid on the input field, so typed text
+    // stops before it instead of rendering underneath. The dot sits a good
+    // distance in from the capsule's own wall, closer to the input than to
+    // the rounded edge.
+    static const CGFloat kDotSize = 10.0;
+    static const CGFloat kSpinnerSize = 16.0;
+    static const CGFloat kClusterGap = 6.0;
+    static const CGFloat kInputClusterGap = 6.0;
+    static const CGFloat kClusterWallMargin = 20.0;
+    CGFloat clusterWidth = kSpinnerSize + kClusterGap + kDotSize;
+    CGFloat inputWidth = composeWidth - xpos - kInputClusterGap - clusterWidth - kClusterWallMargin;
+
+    // Size the field tightly around the font's own line height (rather than
+    // reusing the 28pt icon size) and center that smaller box in the capsule
+    // directly, instead of trying to center text within an oversized cell.
+    NSFont *inputFont = [NSFont systemFontOfSize:13.0];
+    CGFloat inputBoxHeight = ceil(inputFont.ascender - inputFont.descender + inputFont.leading) + 4.0;
+    CGFloat inputY = (kBarHeight - inputBoxHeight) / 2.0;
+
+    HermesInputField *input = [[HermesInputField alloc] initWithFrame:NSMakeRect(xpos, inputY, inputWidth, inputBoxHeight)];
     [input setPlaceholderString:@"Ask me anything..."];
-    [input setBezelStyle:NSTextFieldRoundedBezel];
+    [input setFont:inputFont];
+    [input setBezeled:NO];
+    [input setBordered:NO];
+    [input setFocusRingType:NSFocusRingTypeNone];
     [input setDrawsBackground:YES];
-    [input setBackgroundColor:[NSColor colorWithCalibratedWhite:0.18 alpha:1.0]];
+    [input setBackgroundColor:glassColor];
     [input setTextColor:[NSColor whiteColor]];
     [input setTarget:nil];
     [input setAction:@selector(onInputSend:)];
-    [root addSubview:input];
-    CGFloat inputRight = xpos + inputWidth;
+    [input setWantsLayer:YES];
+    input.layer.cornerRadius = 6.0;
+    [composeCapsule addSubview:input];
     gInput = input;
 
     // Model text-only note sits just below the input field.
-    NSTextField *modelNote = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos, ypos + kInputHeight + 2, inputWidth, 12)];
+    NSTextField *modelNote = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos, inputY + inputBoxHeight + 2, inputWidth, 12)];
     [modelNote setEditable:NO];
     [modelNote setBordered:NO];
     [modelNote setDrawsBackground:NO];
@@ -272,73 +459,43 @@ void hermesOverlayInit(bool stealth) {
     [modelNote setAlignment:NSTextAlignmentCenter];
     [modelNote setRefusesFirstResponder:YES];
     [modelNote setHidden:YES];
-    [root addSubview:modelNote];
+    [composeCapsule addSubview:modelNote];
     gModelNote = modelNote;
 
-    // Status cluster anchored to the right end of the input field
-    gSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(inputRight - 50, ypos + 4, 16, 16)];
+    // Status cluster: spinner then dot, pulled in from the capsule's right
+    // wall toward the input field.
+    CGFloat dotX = composeWidth - kClusterWallMargin - kDotSize;
+    CGFloat spinnerX = dotX - kClusterGap - kSpinnerSize;
+
+    gSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(spinnerX, (kBarHeight - kSpinnerSize) / 2.0, kSpinnerSize, kSpinnerSize)];
     [gSpinner setStyle:NSProgressIndicatorStyleSpinning];
     [gSpinner setDisplayedWhenStopped:NO];
     [gSpinner setHidden:YES];
-    [root addSubview:gSpinner];
+    [composeCapsule addSubview:gSpinner];
 
+    // The rate-limit message used to render as a permanent label next to the
+    // dot; it is now a tooltip on the dot itself, shown only when the dot
+    // turns red/amber (see hermesOverlaySetIndicator / hermesOverlaySetPassBalance).
     gIndicatorDot = makeDot([NSColor greenColor]);
-    [gIndicatorDot setFrame:NSMakeRect(inputRight - 28, ypos + 9, 10, 10)];
-    [root addSubview:gIndicatorDot];
+    [gIndicatorDot setFrame:NSMakeRect(dotX, (kBarHeight - kDotSize) / 2.0, kDotSize, kDotSize)];
+    [composeCapsule addSubview:gIndicatorDot];
 
-    gIndicatorLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(inputRight - 16, ypos, 26, kIconSize)];
-    [gIndicatorLabel setEditable:NO];
-    [gIndicatorLabel setBordered:NO];
-    [gIndicatorLabel setDrawsBackground:NO];
-    [gIndicatorLabel setTextColor:[NSColor lightGrayColor]];
-    [gIndicatorLabel setFont:[NSFont systemFontOfSize:10]];
-    [gIndicatorLabel setStringValue:@""];
-    [gIndicatorLabel setRefusesFirstResponder:YES];
-    [root addSubview:gIndicatorLabel];
-
-    xpos += inputWidth + kIconGap;
-
-    NSButton *typeBtn = [NSButton buttonWithImage:sfIcon(@"keyboard", @"Type answer (CMD+T)")
-                                           target:nil
-                                           action:@selector(onType:)];
-    [typeBtn setBezelStyle:NSBezelStyleRegularSquare];
-    [typeBtn setBordered:NO];
-    [typeBtn setImagePosition:NSImageOnly];
-    [typeBtn setToolTip:@"Type answer (CMD+T)"];
-    [typeBtn setContentTintColor:[NSColor whiteColor]];
-    [typeBtn setWantsLayer:YES];
-    typeBtn.layer.cornerRadius = kIconSize / 2.0;
-    typeBtn.layer.backgroundColor = [NSColor clearColor].CGColor;
-    [typeBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:typeBtn];
-    gTypeButton = typeBtn;
-    xpos += kIconSize + kIconGap;
-
-    // Countdown badge sits on top of the type button.
-    gTypeBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos - 14, ypos + kIconSize - 13, 16, 14)];
-    [gTypeBadge setEditable:NO];
-    [gTypeBadge setBordered:NO];
-    [gTypeBadge setDrawsBackground:NO];
-    [gTypeBadge setTextColor:[NSColor whiteColor]];
-    [gTypeBadge setFont:[NSFont boldSystemFontOfSize:10]];
-    [gTypeBadge setStringValue:@""];
-    [gTypeBadge setAlignment:NSTextAlignmentCenter];
-    [gTypeBadge setRefusesFirstResponder:YES];
-    [gTypeBadge setHidden:YES];
-    [root addSubview:gTypeBadge];
+    // ---- Tools capsule: Capture, Attachments, History, Settings ----
+    CGFloat txpos = kToolsPadX;
+    CGFloat typos = (kBarHeight - kIconSize) / 2.0;
 
     NSButton *capBtn = makeIconButton(@"camera.viewfinder", @"Capture (CMD+H)", @selector(onCapture:));
-    [capBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:capBtn];
+    [capBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:capBtn];
     gCaptureButton = capBtn;
-    xpos += kIconSize + kIconGap;
+    txpos += kIconSize + kToolsGap;
 
     NSButton *clipBtn = makeIconButton(@"paperclip", @"Attachment Tray", @selector(onTray:));
-    [clipBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:clipBtn];
+    [clipBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:clipBtn];
 
     // Attachment-count badge sits on top of the clip button
-    gTrayBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos + kIconSize - 10, ypos + kIconSize - 12, 16, 14)];
+    gTrayBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(txpos + kIconSize - 10, typos + kIconSize - 12, 16, 14)];
     [gTrayBadge setEditable:NO];
     [gTrayBadge setBordered:NO];
     [gTrayBadge setDrawsBackground:NO];
@@ -346,18 +503,18 @@ void hermesOverlayInit(bool stealth) {
     [gTrayBadge setFont:[NSFont boldSystemFontOfSize:9]];
     [gTrayBadge setStringValue:@""];
     [gTrayBadge setRefusesFirstResponder:YES];
-    [root addSubview:gTrayBadge];
+    [toolsCapsule addSubview:gTrayBadge];
 
-    xpos += kIconSize + kIconGap;
+    txpos += kIconSize + kToolsGap;
 
     NSButton *historyBtn = makeIconButton(@"clock", @"History (CMD+Arrows)", @selector(onHistoryEnter:));
-    [historyBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:historyBtn];
+    [historyBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:historyBtn];
     gHistoryButton = historyBtn;
-    xpos += kIconSize + kIconGap;
+    txpos += kIconSize + kToolsGap;
 
     // Pin-count badge sits on top of the history button.
-    gPinBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos - 14, ypos + kIconSize - 13, 16, 14)];
+    gPinBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(txpos - 14, typos + kIconSize - 13, 16, 14)];
     [gPinBadge setEditable:NO];
     [gPinBadge setBordered:NO];
     [gPinBadge setDrawsBackground:NO];
@@ -367,11 +524,11 @@ void hermesOverlayInit(bool stealth) {
     [gPinBadge setAlignment:NSTextAlignmentCenter];
     [gPinBadge setRefusesFirstResponder:YES];
     [gPinBadge setHidden:YES];
-    [root addSubview:gPinBadge];
+    [toolsCapsule addSubview:gPinBadge];
 
     NSButton *gearBtn = makeIconButton(@"gearshape", @"Settings", @selector(onSettings:));
-    [gearBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
-    [root addSubview:gearBtn];
+    [gearBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:gearBtn];
 
     // Answer panel — separate borderless panel so it can extend below the bar.
     NSRect answerFrame = NSMakeRect(x, NSHeight(screen) - kBarHeight - 8 - 260 - 4,
@@ -417,17 +574,6 @@ void hermesOverlayInit(bool stealth) {
     [panelBox addSubview:header];
     gAnswerHeader = header;
 
-    NSTextField *codeTag = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 80, 20)];
-    [codeTag setStringValue:@"code"];
-    [codeTag setEditable:NO];
-    [codeTag setBordered:NO];
-    [codeTag setDrawsBackground:NO];
-    [codeTag setTextColor:hexColor(0x808080)];
-    [codeTag setFont:[NSFont systemFontOfSize:10]];
-    [codeTag setHidden:YES];
-    [panelBox addSubview:codeTag];
-    gCodeTag = codeTag;
-
     NSTextField *posLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(220, 10, 120, 20)];
     [posLabel setStringValue:@""];
     [posLabel setEditable:NO];
@@ -467,21 +613,34 @@ void hermesOverlayInit(bool stealth) {
     [closeBtn setFrame:NSMakeRect(kBarWidth - 44, 8, 24, 24)];
     [panelBox addSubview:closeBtn];
 
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 40, kBarWidth - 30, 180)];
+    // Response board: 16pt left gap, wider right gap (32pt) so the vertical
+    // scroller's consumed interior space on the right doesn't make the
+    // visible board sit tighter to the panel edge than the left side does.
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 46, kBarWidth - 46, 174)];
     [scroll setHasVerticalScroller:YES];
     [scroll setAutohidesScrollers:YES];
     [scroll setScrollerStyle:NSScrollerStyleOverlay];
     [scroll setBorderType:NSBezelBorder];
     gAnswerScroll = scroll;
 
+    // gAnswer is the plain streaming-only view (shown while gGenerating);
+    // once an answer finalizes, rebuildAnswerBody() swaps the scroll's
+    // document view to gAnswerBody instead. Its style never changes, so it's
+    // configured once here rather than per message like the old code path.
     NSTextView *tv = [[NSTextView alloc] initWithFrame:scroll.bounds];
     [tv setEditable:NO];
     [tv setSelectable:YES];
-    [tv setBackgroundColor:[NSColor colorWithCalibratedWhite:0.08 alpha:1.0]];
+    [tv setDrawsBackground:NO];
     [tv setTextColor:[NSColor whiteColor]];
-    [tv setFont:[NSFont systemFontOfSize:13]];
+    [tv setFont:[NSFont systemFontOfSize:9]];
     [tv setString:@""];
     [tv setTextContainerInset:NSMakeSize(0, 0)];
+    [[tv textContainer] setWidthTracksTextView:YES];
+    [[tv textContainer] setContainerSize:NSMakeSize(NSWidth(scroll.bounds), FLT_MAX)];
+    [tv setHorizontallyResizable:NO];
+    [tv setVerticallyResizable:YES];
+    [tv setMaxSize:NSMakeSize(NSWidth(scroll.bounds), FLT_MAX)];
+    [tv setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     [scroll setDocumentView:tv];
     [panelBox addSubview:scroll];
     gAnswer = tv;
@@ -744,192 +903,207 @@ static NSAttributedString *highlightCode(NSString *code) {
     return out;
 }
 
-static BOOL answerLooksLikeCode(NSString *text) {
-    if ([text rangeOfString:@"```"].location != NSNotFound) return YES;
-    NSArray *markers = @[@"func ", @"def ", @"class ", @"import ", @"package ",
-                         @"const ", @"let ", @"var ", @"#include "];
-    for (NSString *m in markers) {
-        if ([text hasPrefix:m]) return YES;
-        NSString *pref = [@"\n" stringByAppendingString:m];
-        if ([text rangeOfString:pref].location != NSNotFound) return YES;
-    }
-    return NO;
+// ---- Consistent answer rendering (code card): TASK.md ----
+// One fixed panel shell for every answer. Prose renders as plain wrapped
+// text blocks; every code block (whole-answer or fenced within prose) renders
+// as its own bordered HermesCodeCard, in reading order. The panel never
+// resizes its chrome by content type, only gAnswerScroll's content scrolls.
+
+static CGFloat measureTextHeight(NSAttributedString *attrStr, CGFloat maxWidth) {
+    if (attrStr.length == 0) return 0;
+    NSTextStorage *storage = [[NSTextStorage alloc] initWithAttributedString:attrStr];
+    NSLayoutManager *lm = [[NSLayoutManager alloc] init];
+    [storage addLayoutManager:lm];
+    NSTextContainer *tc = [[NSTextContainer alloc] initWithContainerSize:NSMakeSize(maxWidth, FLT_MAX)];
+    [tc setLineFragmentPadding:0];
+    [lm addTextContainer:tc];
+    [lm glyphRangeForTextContainer:tc];
+    NSRect used = [lm usedRectForTextContainer:tc];
+    return ceil(NSHeight(used));
 }
 
-static NSAttributedString *plainCodeString(NSString *text) {
-    NSFont *font = codeFont();
-    NSColor *defaultColor = hexColor(0xD4D4D4);
+static NSAttributedString *formatAnswerText(NSString *text) {
+    NSFont *bodyFont = [NSFont systemFontOfSize:10];
+    NSColor *bodyColor = [NSColor whiteColor];
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
-    [para setLineHeightMultiple:1.4];
+    [para setLineHeightMultiple:1.3];
     NSDictionary *attrs = @{
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: defaultColor,
+        NSFontAttributeName: bodyFont,
+        NSForegroundColorAttributeName: bodyColor,
         NSParagraphStyleAttributeName: para
     };
     return [[NSAttributedString alloc] initWithString:text attributes:attrs];
 }
 
-static NSString *stripCodeFences(NSString *text) {
-    NSString *s = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([s hasPrefix:@"```"]) {
-        NSRange newline = [s rangeOfString:@"\n"];
-        if (newline.location != NSNotFound) {
-            s = [s substringFromIndex:newline.location + 1];
+// Parses raw answer text into an ordered list of blocks, each either
+// @{@"type": @"prose", @"text": ...} or @{@"type": @"code", @"text": ..., @"lang": ...}.
+// If there are no ``` fences at all, the whole answer is one block: code
+// when the model classified it AnswerTypeCode, prose otherwise. This is the
+// "straightforward markdown-style parse" TASK.md calls for.
+static NSArray<NSDictionary *> *parseAnswerBlocks(NSString *text, NSInteger answerType) {
+    NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
+    NSCharacterSet *trimSet = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+
+    if ([text rangeOfString:@"```"].location == NSNotFound) {
+        NSString *trimmed = [text stringByTrimmingCharactersInSet:trimSet];
+        if (trimmed.length == 0) return blocks;
+        if (answerType == AnswerTypeCode) {
+            [blocks addObject:@{@"type": @"code", @"text": trimmed, @"lang": detectLanguageTag(trimmed)}];
         } else {
-            s = [s substringFromIndex:3];
+            [blocks addObject:@{@"type": @"prose", @"text": trimmed}];
         }
-        s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        return blocks;
     }
-    if ([s hasSuffix:@"```"]) {
-        s = [s substringToIndex:s.length - 3];
-        s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    }
-    return s;
-}
 
-static NSAttributedString *formatAnswerText(NSString *text) {
-    NSFont *bodyFont = [NSFont systemFontOfSize:13];
-    NSColor *bodyColor = [NSColor whiteColor];
-    NSDictionary *attrs = @{
-        NSFontAttributeName: bodyFont,
-        NSForegroundColorAttributeName: bodyColor
-    };
-    return [[NSAttributedString alloc] initWithString:text attributes:attrs];
-}
-
-static BOOL isFencedCodeOnly(NSString *text) {
-    if ([text rangeOfString:@"```"].location == NSNotFound) return NO;
-    NSArray *parts = [text componentsSeparatedByString:@"```"];
-    if (parts.count != 3) return NO;
-    NSString *before = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSString *after = [[parts lastObject] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return before.length == 0 && after.length == 0;
-}
-
-static NSAttributedString *formatMixedAnswer(NSString *text) {
-    NSFont *bodyFont = [NSFont systemFontOfSize:13];
-    NSColor *bodyColor = [NSColor whiteColor];
-    NSColor *codeBg = hexColor(0x1E1E1E);
-
-    NSMutableParagraphStyle *bodyPara = [[NSMutableParagraphStyle alloc] init];
-    [bodyPara setLineHeightMultiple:1.2];
-
-    NSMutableParagraphStyle *codePara = [[NSMutableParagraphStyle alloc] init];
-    [codePara setLineHeightMultiple:1.2];
-    [codePara setLineSpacing:0];
-
-    NSDictionary *bodyAttrs = @{
-        NSFontAttributeName: bodyFont,
-        NSForegroundColorAttributeName: bodyColor,
-        NSParagraphStyleAttributeName: bodyPara
-    };
-
-    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
-    NSArray *parts = [text componentsSeparatedByString:@"```"];
+    NSArray<NSString *> *parts = [text componentsSeparatedByString:@"```"];
     for (NSUInteger i = 0; i < parts.count; i++) {
         NSString *part = parts[i];
         if (i % 2 == 0) {
-            if (part.length == 0) continue;
-            [out appendAttributedString:[[NSAttributedString alloc] initWithString:part attributes:bodyAttrs]];
+            // Trim: fence-adjacent blank lines would otherwise render as
+            // literal empty vertical space between prose and the code card.
+            NSString *trimmedPart = [part stringByTrimmingCharactersInSet:trimSet];
+            if (trimmedPart.length == 0) continue;
+            [blocks addObject:@{@"type": @"prose", @"text": trimmedPart}];
         } else {
             NSString *code = part;
+            NSString *lang = nil;
             NSRange newline = [code rangeOfString:@"\n"];
             if (newline.location != NSNotFound) {
-                NSString *firstLine = [code substringToIndex:newline.location];
-                if ([firstLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].length > 0) {
+                NSString *firstLine = [[code substringToIndex:newline.location] stringByTrimmingCharactersInSet:trimSet];
+                BOOL looksLikeLangTag = firstLine.length > 0 && firstLine.length < 20 &&
+                    [firstLine rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]].location == NSNotFound;
+                if (looksLikeLangTag) {
+                    lang = [firstLine lowercaseString];
                     code = [code substringFromIndex:newline.location + 1];
                 }
             }
-            code = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            code = [code stringByTrimmingCharactersInSet:trimSet];
             if (code.length == 0) continue;
-            if (out.length > 0) {
-                [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:bodyAttrs]];
-            }
-            NSAttributedString *highlighted = highlightCode(code);
-            NSMutableAttributedString *block = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
-            [block addAttribute:NSBackgroundColorAttributeName value:codeBg range:NSMakeRange(0, block.length)];
-            [block addAttribute:NSParagraphStyleAttributeName value:codePara range:NSMakeRange(0, block.length)];
-            [out appendAttributedString:block];
-            [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:bodyAttrs]];
+            if (!lang) lang = detectLanguageTag(code);
+            [blocks addObject:@{@"type": @"code", @"text": code, @"lang": lang}];
         }
     }
-    return out;
+    return blocks;
 }
 
-static void configureCodeView(BOOL code) {
-    if (!gAnswer || !gAnswerScroll) return;
-    if (code) {
-        // Make the whole answer card a single dark code block.
-        if (gAnswerPanel) {
-            [gAnswerPanel setFillColor:hexColor(0x1E1E1E)];
-            [gAnswerPanel setBorderColor:[NSColor clearColor]];
-            [gAnswerPanel setBorderWidth:0.0];
-            [gAnswerPanel setCornerRadius:10.0];
-        }
-        if (gInHistory) {
-            if (gAnswerHeader) [gAnswerHeader setHidden:NO];
-            if (gHistoryPosition) [gHistoryPosition setHidden:NO];
-            if (gCodeTag) [gCodeTag setHidden:YES];
-        } else {
-            if (gAnswerHeader) [gAnswerHeader setHidden:YES];
-            if (gHistoryPosition) [gHistoryPosition setHidden:YES];
-            if (gCodeTag) {
-                NSString *tag = (gAnswerType == AnswerTypeCode && !gGenerating)
-                    ? detectLanguageTag(gAnswerBuffer) : @"code";
-                [gCodeTag setStringValue:tag];
-                [gCodeTag setHidden:NO];
-            }
-        }
+// HermesCodeCopyButton: the per-card "Copy" control, muted until hovered.
+// Scoped to its own card's code only, separate from the panel-level copy
+// button in the footer (TASK.md DO list).
+@interface HermesCodeCopyButton : NSButton
+@property (nonatomic, copy) NSString *codeText;
+@property (nonatomic, strong) NSTrackingArea *trackingArea;
+@end
 
-        [gAnswer setBackgroundColor:hexColor(0x1E1E1E)];
-        [gAnswer setTextColor:hexColor(0xD4D4D4)];
-        [gAnswer setFont:codeFont()];
-        [gAnswer setTextContainerInset:NSMakeSize(12, 12)];
-        [[gAnswer textContainer] setWidthTracksTextView:NO];
-        [[gAnswer textContainer] setContainerSize:NSMakeSize(FLT_MAX, FLT_MAX)];
-        [gAnswer setHorizontallyResizable:YES];
-        [gAnswer setVerticallyResizable:YES];
-        [gAnswer setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
-        [gAnswer setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        [gAnswerScroll setFrame:NSMakeRect(8, 34, kBarWidth - 26, 214)];
-        [gAnswerScroll setHasHorizontalScroller:YES];
-        [gAnswerScroll setHasVerticalScroller:YES];
-        [gAnswerScroll setBorderType:NSNoBorder];
-        [gAnswerScroll setDrawsBackground:NO];
-        [gAnswerScroll setWantsLayer:YES];
-        [gAnswerScroll layer].cornerRadius = 8.0;
-        [gAnswerScroll layer].masksToBounds = YES;
-    } else {
-        // Standard prose card.
-        if (gAnswerPanel) {
-            [gAnswerPanel setFillColor:[NSColor colorWithCalibratedWhite:0.10 alpha:0.95]];
-            [gAnswerPanel setBorderColor:[NSColor colorWithCalibratedWhite:0.25 alpha:1.0]];
-            [gAnswerPanel setBorderWidth:1.0];
-            [gAnswerPanel setCornerRadius:10.0];
-        }
-        if (gAnswerHeader) [gAnswerHeader setHidden:NO];
-        if (gCodeTag) [gCodeTag setHidden:YES];
-        if (gHistoryPosition) [gHistoryPosition setHidden:!gInHistory];
+@implementation HermesCodeCopyButton
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.trackingArea) [self removeTrackingArea:self.trackingArea];
+    NSTrackingAreaOptions opts = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways;
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds options:opts owner:self userInfo:nil];
+    [self addTrackingArea:self.trackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    [self setContentTintColor:[NSColor whiteColor]];
+}
+- (void)mouseExited:(NSEvent *)event {
+    [self setContentTintColor:hexColor(0x9A9AA4)];
+}
+@end
 
-        [gAnswer setBackgroundColor:[NSColor colorWithCalibratedWhite:0.08 alpha:1.0]];
-        [gAnswer setTextColor:[NSColor whiteColor]];
-        [gAnswer setFont:[NSFont systemFontOfSize:13]];
-        [gAnswer setTextContainerInset:NSMakeSize(0, 0)];
-        [[gAnswer textContainer] setWidthTracksTextView:YES];
-        NSRect bounds = [gAnswerScroll bounds];
-        [[gAnswer textContainer] setContainerSize:NSMakeSize(NSWidth(bounds), FLT_MAX)];
-        [gAnswer setHorizontallyResizable:NO];
-        [gAnswer setVerticallyResizable:YES];
-        [gAnswer setMaxSize:NSMakeSize(NSWidth(bounds), FLT_MAX)];
-        [gAnswer setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        [gAnswerScroll setFrame:NSMakeRect(10, 40, kBarWidth - 30, 180)];
-        [gAnswerScroll setHasHorizontalScroller:NO];
-        [gAnswerScroll setHasVerticalScroller:YES];
-        [gAnswerScroll setBorderType:NSBezelBorder];
-        [gAnswerScroll setDrawsBackground:YES];
-        [gAnswerScroll setWantsLayer:NO];
+// HermesCodeCard: one NSView per code block (TASK.md "THE CODE CARD"). A
+// hairline-bordered, rounded surface with a language tag + Copy header and a
+// horizontally scrollable, syntax highlighted body. Highlighting happens
+// once here, at construction (i.e. once per finished block), never per
+// streaming delta.
+@interface HermesCodeCard : NSView
+@end
+
+@implementation HermesCodeCard
+- (BOOL)isFlipped {
+    return YES;
+}
+- (instancetype)initWithWidth:(CGFloat)width language:(NSString *)lang code:(NSString *)code {
+    static const CGFloat kHeaderH = 28.0;
+    static const CGFloat kHPad = 14.0;
+    static const CGFloat kVPad = 12.0;
+
+    NSAttributedString *highlighted = highlightCode(code);
+    CGFloat textHeight = measureTextHeight(highlighted, 100000.0);
+    CGFloat bodyHeight = textHeight + kVPad * 2;
+    CGFloat totalHeight = kHeaderH + bodyHeight;
+
+    self = [super initWithFrame:NSMakeRect(0, 0, width, totalHeight)];
+    if (self) {
+        [self setWantsLayer:YES];
+        self.layer.backgroundColor = hexColor(0x18181C).CGColor;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.09].CGColor;
+        self.layer.cornerRadius = 10.0;
+        self.layer.masksToBounds = YES;
+
+        NSView *header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, kHeaderH)];
+        [header setWantsLayer:YES];
+        header.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.025].CGColor;
+        [self addSubview:header];
+
+        NSView *headerLine = [[NSView alloc] initWithFrame:NSMakeRect(0, kHeaderH - 1, width, 1)];
+        [headerLine setWantsLayer:YES];
+        headerLine.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.09].CGColor;
+        [self addSubview:headerLine];
+
+        // Sized tightly around the font's own line height and centered via
+        // its frame position, same fix as the command bar input field --
+        // NSTextFieldCell does not reliably vertically center text within an
+        // oversized frame on its own.
+        NSFont *tagFont = [NSFont fontWithName:@"SF Mono" size:10.5];
+        if (!tagFont) tagFont = [NSFont userFixedPitchFontOfSize:10.5];
+        CGFloat tagLabelH = ceil(tagFont.ascender - tagFont.descender + tagFont.leading);
+        NSTextField *langLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(kHPad, (kHeaderH - tagLabelH) / 2.0, width / 2.0, tagLabelH)];
+        [langLabel setEditable:NO];
+        [langLabel setBordered:NO];
+        [langLabel setDrawsBackground:NO];
+        [langLabel setTextColor:hexColor(0x9A9AA4)];
+        [langLabel setFont:tagFont];
+        [langLabel setStringValue:lang.length > 0 ? [lang lowercaseString] : @"code"];
+        [header addSubview:langLabel];
+
+        HermesCodeCopyButton *copyBtn = [[HermesCodeCopyButton alloc] initWithFrame:NSMakeRect(width - 74, 3, 60, kHeaderH - 6)];
+        [copyBtn setCodeText:code];
+        [copyBtn setImage:sfIcon(@"square.on.square", @"Copy")];
+        [copyBtn setImagePosition:NSImageLeft];
+        [copyBtn setTitle:@" Copy"];
+        [copyBtn setFont:[NSFont systemFontOfSize:10.5]];
+        [copyBtn setBezelStyle:NSBezelStyleRegularSquare];
+        [copyBtn setBordered:NO];
+        [copyBtn setContentTintColor:hexColor(0x9A9AA4)];
+        [copyBtn setTarget:NSApp];
+        [copyBtn setAction:@selector(onCodeCardCopy:)];
+        [header addSubview:copyBtn];
+
+        NSScrollView *bodyScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, kHeaderH, width, bodyHeight)];
+        [bodyScroll setHasHorizontalScroller:YES];
+        [bodyScroll setHasVerticalScroller:NO];
+        [bodyScroll setAutohidesScrollers:YES];
+        [bodyScroll setBorderType:NSNoBorder];
+        [bodyScroll setDrawsBackground:NO];
+
+        NSTextView *codeView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, width, bodyHeight)];
+        [codeView setEditable:NO];
+        [codeView setSelectable:YES];
+        [codeView setDrawsBackground:NO];
+        [codeView setTextContainerInset:NSMakeSize(kHPad, kVPad)];
+        [[codeView textContainer] setWidthTracksTextView:NO];
+        [[codeView textContainer] setContainerSize:NSMakeSize(100000.0, FLT_MAX)];
+        [codeView setHorizontallyResizable:YES];
+        [codeView setVerticallyResizable:NO];
+        [codeView setMaxSize:NSMakeSize(100000.0, bodyHeight)];
+        [[codeView textStorage] setAttributedString:highlighted];
+        [bodyScroll setDocumentView:codeView];
+        [self addSubview:bodyScroll];
     }
+    return self;
 }
+@end
 
 static void updateAnswerHeader(void) {
     if (!gAnswerHeader) return;
@@ -940,45 +1114,77 @@ static void updateAnswerHeader(void) {
     } else {
         [gAnswerHeader setStringValue:@"Hermes"];
         [gAnswerHeader setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
-        [gAnswerHeader setFont:[NSFont boldSystemFontOfSize:13]];
+        [gAnswerHeader setFont:[NSFont systemFontOfSize:13]];
     }
 }
 
-static void refreshAnswerDisplay(void) {
-    if (!gAnswer) return;
+// Parses gAnswerBuffer into blocks and rebuilds gAnswerBody as a vertical
+// stack of prose text views and HermesCodeCards, then swaps it in as
+// gAnswerScroll's document view. Called once per finished answer (Finalize,
+// history navigation, history exit) -- never while streaming.
+static void rebuildAnswerBody(void) {
+    if (!gAnswerScroll) return;
     updateAnswerHeader();
-    BOOL isFinalCode = (gAnswerType == AnswerTypeCode && !gGenerating);
-    BOOL hasFences = ([gAnswerBuffer rangeOfString:@"```"].location != NSNotFound);
-    if (isFinalCode && !hasFences) {
-        configureCodeView(YES);
-        NSString *code = stripCodeFences(gAnswerBuffer);
-        [[gAnswer textStorage] setAttributedString:highlightCode(code)];
-    } else if (isFinalCode && hasFences && isFencedCodeOnly(gAnswerBuffer)) {
-        configureCodeView(YES);
-        NSString *code = stripCodeFences(gAnswerBuffer);
-        [[gAnswer textStorage] setAttributedString:highlightCode(code)];
-    } else if (!gInHistory && gGenerating && answerLooksLikeCode(gAnswerBuffer)) {
-        configureCodeView(YES);
-        NSString *code = stripCodeFences(gAnswerBuffer);
-        [[gAnswer textStorage] setAttributedString:plainCodeString(code)];
-    } else {
-        configureCodeView(NO);
-        if (hasFences) {
-            [[gAnswer textStorage] setAttributedString:formatMixedAnswer(gAnswerBuffer)];
+
+    // Use the clip view's width, not the scroll view's own bounds: if the
+    // vertical scroller resolves to the legacy (space-consuming) style
+    // rather than the requested overlay style, it eats into the right side
+    // of the scroll view's bounds, and sizing content against the wider,
+    // scroller-unaware bounds left a bigger effective margin on the left
+    // than the right once the scroller's track covered part of the right.
+    CGFloat width = NSWidth([[gAnswerScroll contentView] bounds]);
+    if (width <= 0) width = kBarWidth - 30;
+
+    NSArray<NSDictionary *> *blocks = parseAnswerBlocks(gAnswerBuffer, gAnswerType);
+
+    NSView *container = [[HermesOverlayView alloc] initWithFrame:NSMakeRect(0, 0, width, 0)];
+    [container setWantsLayer:YES];
+    container.layer.backgroundColor = [NSColor clearColor].CGColor;
+
+    static const CGFloat kBlockGap = 6.0;
+    static const CGFloat kCardWidthFraction = 0.9;
+    CGFloat y = 0;
+    for (NSDictionary *block in blocks) {
+        if ([block[@"type"] isEqualToString:@"code"]) {
+            CGFloat cardWidth = width * kCardWidthFraction;
+            CGFloat cardX = (width - cardWidth) / 2.0;
+            HermesCodeCard *card = [[HermesCodeCard alloc] initWithWidth:cardWidth language:block[@"lang"] code:block[@"text"]];
+            [card setFrameOrigin:NSMakePoint(cardX, y)];
+            [container addSubview:card];
+            y += NSHeight(card.frame) + kBlockGap;
         } else {
-            [[gAnswer textStorage] setAttributedString:formatAnswerText(gAnswerBuffer)];
+            NSAttributedString *attr = formatAnswerText(block[@"text"]);
+            CGFloat h = measureTextHeight(attr, width);
+            NSTextView *proseView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, y, width, h)];
+            [proseView setEditable:NO];
+            [proseView setSelectable:YES];
+            [proseView setDrawsBackground:NO];
+            [proseView setTextContainerInset:NSMakeSize(0, 0)];
+            [[proseView textContainer] setWidthTracksTextView:YES];
+            [[proseView textContainer] setContainerSize:NSMakeSize(width, FLT_MAX)];
+            [proseView setHorizontallyResizable:NO];
+            [proseView setVerticallyResizable:NO];
+            [[proseView textStorage] setAttributedString:attr];
+            [container addSubview:proseView];
+            y += h + kBlockGap;
         }
     }
+    if (y > 0) y -= kBlockGap;
+    [container setFrame:NSMakeRect(0, 0, width, y)];
+
+    gAnswerBody = container;
+    [gAnswerScroll setDocumentView:gAnswerBody];
+    [[gAnswerScroll contentView] scrollToPoint:NSMakePoint(0, 0)];
+    [gAnswerScroll reflectScrolledClipView:[gAnswerScroll contentView]];
 }
 
 void hermesOverlayBeginAnswer(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        fprintf(stderr, "Hermes: BeginAnswer on main thread, gPanel=%p gAnswerWindow=%p\n",
-                (void *)gPanel, (void *)gAnswerWindow);
         ensureShown();
         gAnswerType = 0;
         [gAnswerBuffer setString:@""];
         [[gAnswer textStorage] setAttributedString:formatAnswerText(@"")];
+        [gAnswerScroll setDocumentView:gAnswer];
         updateAnswerHeader();
         showAnswerWindow();
         // Re-order once more after the run loop has processed the show,
@@ -986,8 +1192,6 @@ void hermesOverlayBeginAnswer(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gAnswerWindow && [gAnswerWindow isVisible]) {
                 [gAnswerWindow orderFront:nil];
-                fprintf(stderr, "Hermes: re-ordered answer window visible=%d\n",
-                        [gAnswerWindow isVisible] ? 1 : 0);
             }
         });
         gGenerating = YES;
@@ -1001,7 +1205,13 @@ void hermesOverlayAppendAnswer(const char *delta) {
     NSString *s = [NSString stringWithUTF8String:delta];
     dispatch_async(dispatch_get_main_queue(), ^{
         [gAnswerBuffer appendString:s];
-        refreshAnswerDisplay();
+        // Streaming just appends plain text to gAnswer as it arrives; no
+        // parsing or highlighting until FinalizeAnswer calls rebuildAnswerBody.
+        NSAttributedString *piece = [[NSAttributedString alloc] initWithString:s attributes:@{
+            NSFontAttributeName: [NSFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: [NSColor whiteColor]
+        }];
+        [[gAnswer textStorage] appendAttributedString:piece];
     });
 }
 
@@ -1014,11 +1224,7 @@ void hermesOverlayFinalizeAnswer(const char *text, int type) {
         gGenerating = NO;
         [gSpinner stopAnimation:nil];
         [gSpinner setHidden:YES];
-        refreshAnswerDisplay();
-
-        fprintf(stderr, "Hermes: FinalizeAnswer visible=%d frame=%s\n",
-                [gAnswerWindow isVisible] ? 1 : 0,
-                [NSStringFromRect([gAnswerWindow frame]) UTF8String]);
+        rebuildAnswerBody();
     });
 }
 
@@ -1044,14 +1250,59 @@ void hermesOverlaySetIndicator(bool canSend, int clearsInSeconds) {
         if (canSend) {
             gIndicatorDot.layer.backgroundColor = [NSColor greenColor].CGColor;
             setDotPulsing(NO);
-            if (gIndicatorLabel) [gIndicatorLabel setStringValue:@""];
+            [gIndicatorDot setToolTip:nil];
         } else {
             gIndicatorDot.layer.backgroundColor = [NSColor redColor].CGColor;
             setDotPulsing(YES);
-            if (gIndicatorLabel) {
-                NSString *label = clearsInSeconds > 0 ? [NSString stringWithFormat:@"%ds", clearsInSeconds] : @"";
-                [gIndicatorLabel setStringValue:label];
-            }
+            NSString *tip = clearsInSeconds > 0
+                ? [NSString stringWithFormat:@"Rate limit, clears in %ds", clearsInSeconds]
+                : @"Rate limit reached";
+            [gIndicatorDot setToolTip:tip];
+        }
+    });
+}
+
+void hermesOverlaySetPassBalance(bool active, int pct) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gIndicatorDot) return;
+        if (!active) {
+            gIndicatorDot.layer.backgroundColor = [NSColor greenColor].CGColor;
+            setDotPulsing(NO);
+            [gIndicatorDot setToolTip:nil];
+            return;
+        }
+        if (pct <= 10) {
+            gIndicatorDot.layer.backgroundColor = [NSColor redColor].CGColor;
+            setDotPulsing(YES);
+            [gIndicatorDot setToolTip:[NSString stringWithFormat:@"Pass balance low, %d%% left", pct]];
+        } else if (pct <= 20) {
+            gIndicatorDot.layer.backgroundColor = hermesAmber().CGColor;
+            setDotPulsing(NO);
+            [gIndicatorDot setToolTip:[NSString stringWithFormat:@"Pass balance low, %d%% left", pct]];
+        } else {
+            gIndicatorDot.layer.backgroundColor = [NSColor greenColor].CGColor;
+            setDotPulsing(NO);
+            [gIndicatorDot setToolTip:nil];
+        }
+    });
+}
+
+void hermesOverlaySetOpacity(int pct) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gPanel) return;
+        CGFloat a = pct / 100.0;
+        if (a < 0.2) a = 0.2;
+        if (a > 1.0) a = 1.0;
+        [gPanel setAlphaValue:a];
+
+        // The lower the opacity, the more the desktop shows through the
+        // capsules, so brighten the input text toward pure white to keep it
+        // readable; at full opacity it stays a slightly softer off-white.
+        if (gInput) {
+            CGFloat t = 1.0 - a; // 0 at pct=100, up to 0.8 at pct=20
+            CGFloat white = 0.85 + 0.15 * (t / 0.8);
+            if (white > 1.0) white = 1.0;
+            [gInput setTextColor:[NSColor colorWithCalibratedWhite:white alpha:1.0]];
         }
     });
 }
@@ -1114,7 +1365,6 @@ void hermesOverlayEnterHistory(void) {
         gSavedAnswerBuffer = [gAnswerBuffer copy];
         gInHistory = YES;
         if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
-        if (gCodeTag) [gCodeTag setHidden:YES];
         if (gHistoryPosition) [gHistoryPosition setHidden:NO];
         if (gPinButton) [gPinButton setHidden:NO];
         showAnswerWindow();
@@ -1129,7 +1379,6 @@ void hermesOverlayShowHistoryItem(int index, int total, const char *question, co
         if (!gInHistory) {
             gInHistory = YES;
             if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
-            if (gCodeTag) [gCodeTag setHidden:YES];
             if (gHistoryPosition) [gHistoryPosition setHidden:NO];
             if (gPinButton) [gPinButton setHidden:NO];
         }
@@ -1139,7 +1388,7 @@ void hermesOverlayShowHistoryItem(int index, int total, const char *question, co
         if (gAnswerBuffer) {
             [gAnswerBuffer setString:a];
             gAnswerType = answerType;
-            refreshAnswerDisplay();
+            rebuildAnswerBody();
         }
         updatePinButton(pinned);
         if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:(index > 0)];
@@ -1195,7 +1444,7 @@ void hermesOverlayExitHistory(void) {
         if (gCountdown) [gCountdown setHidden:YES];
         if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:NO];
         if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:NO];
-        refreshAnswerDisplay();
+        rebuildAnswerBody();
     });
 }
 
@@ -1288,24 +1537,101 @@ void hermesOverlayRun(void) {
 @interface HermesSettingsDelegate : NSObject <NSWindowDelegate>
 @end
 
-static HermesSettingsDelegate *gSettingsDelegate = nil;
-static NSWindow *gSettingsWindow = nil;
-static NSTextField *gSetAPIKey = nil;
-
 @implementation HermesSettingsDelegate
 - (void)windowWillClose:(NSNotification *)notification {
     gSettingsWindow = nil;
 }
 @end
+
+#define HERMES_VERSION @"1.0.2"
+#define HERMES_GITHUB_OWNER @"Mod5ied"
+#define HERMES_GITHUB_REPO @"Hermes"
+#define HERMES_RELEASES_URL @"https://github.com/Mod5ied/Hermes/releases"
+
+typedef NS_ENUM(NSInteger, SettingsPane) {
+    SettingsPaneGeneral = 0,
+    SettingsPaneProvider,
+    SettingsPanePass,
+    SettingsPaneResume,
+    SettingsPaneSpeech,
+    SettingsPaneHotkeys,
+    SettingsPaneAbout
+};
+
+typedef NS_ENUM(NSInteger, UpdateStatus) {
+    UpdateStatusChecking = 0,
+    UpdateStatusUpToDate,
+    UpdateStatusAvailable,
+    UpdateStatusFailed
+};
+
+static HermesSettingsDelegate *gSettingsDelegate = nil;
+static NSView *gSettingsContent = nil;
+@class HermesNavRow;
+static NSMutableArray<HermesNavRow *> *gSidebarRows = nil;
+static NSButton *gSaveButton = nil;
+static BOOL gSettingsDirty = NO;
+static void markSettingsDirty(void);
+static NSTextField *gSetAPIKey = nil;
 static NSPopUpButton *gSetProvider = nil;
 static NSPopUpButton *gSetModel = nil;
+static NSTextField *gSetModelTag = nil;
 static NSMutableArray<NSString *> *gModelNames = nil;
 static NSDictionary *gSettingsPayload = nil;
-static NSButton *gSetStealth = nil;
-static NSButton *gSetHumanise = nil;
-static NSTextField *gSetDelay = nil;
+static id gSetStealth = nil;
+static id gSetHumanise = nil;
+static NSPopUpButton *gSetDelay = nil;
 static NSTextView *gSetResume = nil;
 static NSPopUpButton *gSetLocale = nil;
+static NSTextField *gSetPassKey = nil;
+static NSSlider *gSetOpacity = nil;
+static NSTextField *gOpacityLabel = nil;
+static NSTextField *gUpdatesLabel = nil;
+static NSView *gUpdatesDot = nil;
+
+static NSString *gLastApiKey = nil;
+static NSString *gLastProvider = nil;
+static NSString *gLastModel = nil;
+static BOOL gLastStealth = NO;
+static BOOL gLastHumanise = NO;
+static int gLastDelayMs = 90;
+static NSString *gLastResume = nil;
+static NSString *gLastLocale = nil;
+static NSString *gLastPassKey = nil;
+static BOOL gLastPassActive = NO;
+static int gLastOpacity = 85;
+static int gLastPassPct = 0;
+
+static UpdateStatus gUpdateStatus = UpdateStatusChecking;
+static NSString *gUpdateLatestTag = nil;
+
+static const int kDelayPresets[3] = {8, 22, 40};
+static NSString * const kDelayPresetTitles[3] = {@"Fast · 8ms", @"Natural · 22ms", @"Slow · 40ms"};
+
+static NSString *nsOrEmpty(NSString *s) { return s ?: @""; }
+
+// Palette lifted from the HTML settings reference (HTML.md). Only the accent
+// (formerly signal-violet) changed to gray; semantic colors are untouched.
+static NSColor *hermesGrayLight(void) {
+    return [NSColor colorWithCalibratedRed:0.718 green:0.718 blue:0.753 alpha:1.0];
+}
+static NSColor *hermesGrayDark(void) {
+    return [NSColor colorWithCalibratedRed:0.431 green:0.431 blue:0.471 alpha:1.0];
+}
+static NSColor *hermesGrayDim(void) {
+    return [hermesGrayLight() colorWithAlphaComponent:0.14];
+}
+static NSColor *hBgVoid(void) { return hexColor(0x0B0B0E); }
+static NSColor *hBgPanel(void) { return hexColor(0x16161B); }
+static NSColor *hBgElevated(void) { return hexColor(0x1E1E25); }
+static NSColor *hBgElevatedHover(void) { return hexColor(0x26262E); }
+static NSColor *hHairline(void) { return [NSColor colorWithCalibratedWhite:1.0 alpha:0.09]; }
+static NSColor *hTextPrimary(void) { return hexColor(0xEDEDF2); }
+static NSColor *hTextMuted(void) { return hexColor(0x8A8A96); }
+static NSColor *hTextFaint(void) { return hexColor(0x55555F); }
+static NSColor *hGood(void) { return hexColor(0x3ECF8E); }
+static NSColor *hBad(void) { return hexColor(0xFF6161); }
+static NSColor *hCyan(void) { return hexColor(0x5CE1E6); }
 
 static NSTextField *makeLabel(NSRect frame, NSString *text) {
     NSTextField *f = [[NSTextField alloc] initWithFrame:frame];
@@ -1313,9 +1639,109 @@ static NSTextField *makeLabel(NSRect frame, NSString *text) {
     [f setEditable:NO];
     [f setBordered:NO];
     [f setDrawsBackground:NO];
-    [f setTextColor:[NSColor whiteColor]];
+    [f setTextColor:hTextPrimary()];
     return f;
 }
+
+static NSTextField *makeDesc(NSRect frame, NSString *text) {
+    NSTextField *f = makeLabel(frame, text);
+    [f setFont:[NSFont systemFontOfSize:11]];
+    [f setTextColor:hTextMuted()];
+    return f;
+}
+
+static NSView *makeStatusDot(NSColor *color, CGFloat size) {
+    NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, size, size)];
+    [v setWantsLayer:YES];
+    v.layer.cornerRadius = size / 2.0;
+    v.layer.backgroundColor = color.CGColor;
+    v.layer.shadowColor = color.CGColor;
+    v.layer.shadowRadius = 3.0;
+    v.layer.shadowOpacity = 0.9;
+    v.layer.shadowOffset = CGSizeZero;
+    return v;
+}
+
+// HermesToggle: a cloak-style pill switch standing in for a generic iOS
+// switch, matching the ".toggle" look in the HTML reference.
+@interface HermesToggle : NSControl
+@property (nonatomic, assign, getter=isOn) BOOL on;
+@property (nonatomic, strong) CALayer *track;
+@property (nonatomic, strong) CALayer *knob;
+@end
+
+@implementation HermesToggle
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        self.track = [CALayer layer];
+        self.track.frame = self.bounds;
+        self.track.cornerRadius = frameRect.size.height / 2.0;
+        self.track.borderWidth = 1.0;
+        [self.layer addSublayer:self.track];
+        CGFloat knobSize = frameRect.size.height - 6;
+        self.knob = [CALayer layer];
+        self.knob.cornerRadius = knobSize / 2.0;
+        [self.layer addSublayer:self.knob];
+        [self applyState];
+    }
+    return self;
+}
+- (void)applyState {
+    CGFloat knobSize = self.bounds.size.height - 6;
+    if (_on) {
+        self.track.backgroundColor = hermesGrayLight().CGColor;
+        self.track.borderColor = [NSColor clearColor].CGColor;
+        self.knob.frame = CGRectMake(self.bounds.size.width - knobSize - 2, 3, knobSize, knobSize);
+        self.knob.backgroundColor = [NSColor whiteColor].CGColor;
+    } else {
+        self.track.backgroundColor = hBgElevatedHover().CGColor;
+        self.track.borderColor = hHairline().CGColor;
+        self.knob.frame = CGRectMake(2, 3, knobSize, knobSize);
+        self.knob.backgroundColor = [NSColor colorWithCalibratedWhite:0.42 alpha:1.0].CGColor;
+    }
+}
+- (void)setOn:(BOOL)on {
+    _on = on;
+    [self applyState];
+}
+- (void)mouseDown:(NSEvent *)event {
+    self.on = !self.on;
+    if (self.target && self.action) {
+        [NSApp sendAction:self.action to:self.target from:self];
+    }
+}
+@end
+
+// HermesFieldSync mirrors live text-field edits into the gLast* globals so
+// Save can read a consistent snapshot even after the user has switched panes
+// and the originating control has been torn down.
+@interface HermesFieldSync : NSObject <NSTextFieldDelegate, NSTextViewDelegate>
+@end
+static HermesFieldSync *gFieldSync = nil;
+
+@implementation HermesFieldSync
+- (void)controlTextDidChange:(NSNotification *)note {
+    id obj = note.object;
+    if (obj == gSetAPIKey) {
+        NSString *v = [gSetAPIKey stringValue];
+        if (gLastApiKey != v) { [gLastApiKey release]; gLastApiKey = [v retain]; }
+        markSettingsDirty();
+    } else if (obj == gSetPassKey) {
+        NSString *v = [gSetPassKey stringValue];
+        if (gLastPassKey != v) { [gLastPassKey release]; gLastPassKey = [v retain]; }
+        markSettingsDirty();
+    }
+}
+- (void)textDidChange:(NSNotification *)note {
+    if (note.object == gSetResume) {
+        NSString *v = [gSetResume string];
+        if (gLastResume != v) { [gLastResume release]; gLastResume = [v retain]; }
+        markSettingsDirty();
+    }
+}
+@end
 
 static void populateModelPopup(NSString *provider, NSString *selectedModel) {
     fprintf(stderr, "Hermes: populateModelPopup provider=%s gSetModel=%p\n", provider.UTF8String, (void *)gSetModel);
@@ -1348,8 +1774,14 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
     NSTextField *f = [[NSTextField alloc] initWithFrame:frame];
     [f setStringValue:value ?: @""];
     [f setDrawsBackground:YES];
-    [f setBackgroundColor:[NSColor colorWithCalibratedWhite:0.18 alpha:1.0]];
-    [f setTextColor:[NSColor whiteColor]];
+    [f setBackgroundColor:hBgElevated()];
+    [f setTextColor:hTextPrimary()];
+    [f setBordered:NO];
+    [f setFocusRingType:NSFocusRingTypeNone];
+    [f setWantsLayer:YES];
+    f.layer.cornerRadius = 7.0;
+    f.layer.borderWidth = 1.0;
+    f.layer.borderColor = hHairline().CGColor;
     return f;
 }
 
@@ -1371,10 +1803,12 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
     [self addTrackingArea:self.trackingArea];
 }
 - (void)mouseEntered:(NSEvent *)event {
-    self.layer.backgroundColor = [NSColor colorWithCalibratedRed:1.0 green:0.55 blue:0.0 alpha:1.0].CGColor;
+    if (!self.isEnabled) return;
+    self.layer.backgroundColor = hermesGrayDark().CGColor;
 }
 - (void)mouseExited:(NSEvent *)event {
-    self.layer.backgroundColor = hermesAmber().CGColor;
+    if (!self.isEnabled) return;
+    self.layer.backgroundColor = hermesGrayLight().CGColor;
 }
 @end
 
@@ -1403,15 +1837,659 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
 }
 @end
 
+// HermesNavRow: sidebar nav button with an active-state fill and a hover
+// highlight when inactive, matching ".nav button" / ".nav button:hover".
+// HermesNavRowCell insets the icon+title drawing so text doesn't sit flush
+// against the highlighted row's edges, matching ".nav button{padding:7px 10px}".
+@interface HermesNavRowCell : NSButtonCell
+@end
+
+@implementation HermesNavRowCell
+- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView {
+    [super drawInteriorWithFrame:NSInsetRect(cellFrame, 10, 0) inView:controlView];
+}
+@end
+
+@interface HermesNavRow : NSButton
+@property (nonatomic, assign) BOOL isActiveRow;
+@property (nonatomic, strong) NSTrackingArea *trackingArea;
+@end
+
+@implementation HermesNavRow
++ (Class)cellClass { return [HermesNavRowCell class]; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.trackingArea) [self removeTrackingArea:self.trackingArea];
+    NSTrackingAreaOptions opts = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways;
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds options:opts owner:self userInfo:nil];
+    [self addTrackingArea:self.trackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    if (self.isActiveRow) return;
+    self.layer.backgroundColor = hBgElevated().CGColor;
+    [self setContentTintColor:hTextPrimary()];
+}
+- (void)mouseExited:(NSEvent *)event {
+    if (self.isActiveRow) return;
+    self.layer.backgroundColor = [NSColor clearColor].CGColor;
+    [self setContentTintColor:hTextMuted()];
+}
+- (void)setActiveRow:(BOOL)active {
+    self.isActiveRow = active;
+    self.layer.backgroundColor = active ? hermesGrayDim().CGColor : [NSColor clearColor].CGColor;
+    [self setContentTintColor:active ? hTextPrimary() : hTextMuted()];
+}
+@end
+
+// iconWithTrailingPad widens an icon's layout canvas (transparently) so the
+// button cell's automatic image/title spacing gets a couple extra points,
+// without touching the tinted-drawing path that gives active/hover coloring.
+static NSImage *iconWithTrailingPad(NSImage *icon, CGFloat pad) {
+    if (!icon) return icon;
+    NSSize base = icon.size;
+    NSSize padded = NSMakeSize(base.width + pad, base.height);
+    NSImage *result = [NSImage imageWithSize:padded flipped:NO drawingHandler:^BOOL(NSRect dstRect) {
+        [icon drawInRect:NSMakeRect(0, 0, base.width, base.height)
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0];
+        return YES;
+    }];
+    [result setTemplate:icon.template];
+    return result;
+}
+
+static NSButton *makeSidebarRow(NSString *title, NSString *iconName, NSInteger tag) {
+    HermesNavRow *btn = [[HermesNavRow alloc] initWithFrame:NSZeroRect];
+    [btn setTitle:title];
+    [btn setImage:iconWithTrailingPad(sfIcon(iconName, title), 2.0)];
+    [btn setImagePosition:NSImageLeft];
+    [btn setTarget:NSApp];
+    [btn setAction:@selector(onSettingsPaneSelect:)];
+    [btn setTag:tag];
+    [btn setBezelStyle:NSBezelStyleRegularSquare];
+    [btn setBordered:NO];
+    [btn setFont:[NSFont systemFontOfSize:12.5]];
+    [btn setContentTintColor:hTextMuted()];
+    [btn setAlignment:NSTextAlignmentLeft];
+    [btn setWantsLayer:YES];
+    btn.layer.cornerRadius = 7.0;
+    btn.layer.backgroundColor = [NSColor clearColor].CGColor;
+    return btn;
+}
+
+// Card/row helpers: a rounded, hairline-bordered container with the header
+// row's bottom divider skipped for the last row added, mirroring ".card"/".row".
+static NSView *addCard(NSView *content, CGFloat padX, CGFloat cw, CGFloat top, CGFloat height) {
+    NSView *card = [[NSView alloc] initWithFrame:NSMakeRect(padX, top - height, cw - padX * 2, height)];
+    [card setWantsLayer:YES];
+    card.layer.backgroundColor = hBgPanel().CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = hHairline().CGColor;
+    card.layer.cornerRadius = 12.0;
+    card.layer.masksToBounds = YES;
+    [content addSubview:card];
+    return card;
+}
+
+static void addRowDivider(NSView *card, CGFloat y, CGFloat cw) {
+    NSView *line = [[NSView alloc] initWithFrame:NSMakeRect(0, y, cw, 1)];
+    [line setWantsLayer:YES];
+    line.layer.backgroundColor = hHairline().CGColor;
+    [card addSubview:line];
+}
+
+static NSTextField *addPaneHeader(NSView *content, CGFloat padX, CGFloat cw, CGFloat *y, NSString *title, NSString *subtitle) {
+    NSTextField *h1 = makeLabel(NSMakeRect(padX, *y - 22, cw - padX * 2, 22), title);
+    [h1 setFont:[NSFont boldSystemFontOfSize:17]];
+    [content addSubview:h1];
+    *y -= 26;
+    NSTextField *sub = makeDesc(NSMakeRect(padX, *y - 18, cw - padX * 2, 18), subtitle);
+    [content addSubview:sub];
+    *y -= 32;
+    return sub;
+}
+
+static NSView *opacityGlyph(BOOL solid) {
+    NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 14, 14)];
+    [v setWantsLayer:YES];
+    v.layer.cornerRadius = 3.0;
+    v.layer.borderWidth = 1.0;
+    v.layer.borderColor = (solid ? hTextMuted() : hTextFaint()).CGColor;
+    v.layer.backgroundColor = solid ? hTextMuted().CGColor : [NSColor clearColor].CGColor;
+    return v;
+}
+
+static CAShapeLayer *ringArcLayer(CGRect rect, CGFloat lineWidth, NSColor *color, CGFloat pct) {
+    CGFloat radius = rect.size.width / 2.0 - lineWidth / 2.0;
+    CGPoint center = CGPointMake(rect.size.width / 2.0, rect.size.height / 2.0);
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGFloat start = M_PI_2;
+    CGFloat end = start - (2 * M_PI * pct);
+    CGPathAddArc(path, NULL, center.x, center.y, radius, start, end, YES);
+    CAShapeLayer *layer = [CAShapeLayer layer];
+    layer.frame = rect;
+    layer.path = path;
+    CGPathRelease(path);
+    layer.fillColor = [NSColor clearColor].CGColor;
+    layer.strokeColor = color.CGColor;
+    layer.lineWidth = lineWidth;
+    layer.lineCap = kCALineCapRound;
+    return layer;
+}
+
+// Save starts disabled and only lights up once a field actually changes, so
+// there is nothing to accidentally overwrite the persisted config with.
+static void applySaveButtonState(NSButton *save) {
+    BOOL enabled = gSettingsDirty;
+    [save setEnabled:enabled];
+    save.layer.backgroundColor = enabled ? hermesGrayLight().CGColor : [hermesGrayLight() colorWithAlphaComponent:0.35].CGColor;
+    [save setContentTintColor:enabled ? [NSColor blackColor] : [NSColor colorWithCalibratedWhite:0.4 alpha:1.0]];
+}
+
+static void markSettingsDirty(void) {
+    if (gSettingsDirty) return;
+    gSettingsDirty = YES;
+    if (gSaveButton) applySaveButtonState(gSaveButton);
+}
+
+static void addSaveButton(NSView *content, CGFloat padX, CGFloat cw, CGFloat *y) {
+    HermesSaveButton *save = [[HermesSaveButton alloc] initWithFrame:NSMakeRect(padX, *y - 36, cw - padX * 2, 36)];
+    [save setTitle:@"Save"];
+    [save setTarget:NSApp];
+    [save setAction:@selector(onSettingsSave:)];
+    [save setBezelStyle:NSBezelStyleRegularSquare];
+    [save setBordered:NO];
+    [save setWantsLayer:YES];
+    [save setFont:[NSFont systemFontOfSize:13.5]];
+    save.layer.cornerRadius = 8.0;
+    [content addSubview:save];
+    gSaveButton = save;
+    applySaveButtonState(save);
+    *y -= 46;
+}
+
+static NSButton *makePillButton(NSString *title, NSInteger tag, SEL action) {
+    NSButton *btn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    [btn setTitle:title];
+    [btn setTarget:NSApp];
+    [btn setAction:action];
+    [btn setTag:tag];
+    [btn setBezelStyle:NSBezelStyleRegularSquare];
+    [btn setBordered:NO];
+    [btn setFont:[NSFont systemFontOfSize:11]];
+    [btn setContentTintColor:hermesGrayLight()];
+    [btn setWantsLayer:YES];
+    btn.layer.cornerRadius = 6.0;
+    btn.layer.borderWidth = 1.0;
+    btn.layer.borderColor = [hermesGrayLight() colorWithAlphaComponent:0.3].CGColor;
+    return btn;
+}
+
+static BOOL modelIsVision(NSString *provider, NSString *model) {
+    NSDictionary *modelsDict = gSettingsPayload[@"models"];
+    NSArray *models = modelsDict[provider];
+    if (![models isKindOfClass:[NSArray class]]) return NO;
+    for (NSDictionary *m in models) {
+        if ([m[@"name"] isEqualToString:model]) return [m[@"vision"] boolValue];
+    }
+    return NO;
+}
+
+static void updateModelTag(void) {
+    if (!gSetModelTag) return;
+    BOOL vision = modelIsVision(gLastProvider, gLastModel);
+    [gSetModelTag setStringValue:vision ? @"TEXT + IMAGE" : @"TEXT ONLY"];
+    [gSetModelTag setTextColor:vision ? hCyan() : hTextMuted()];
+}
+
+static void showSettingsPane(SettingsPane pane);
+static void applyUpdateStatus(void);
+
+static void buildGeneralPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"General", @"Behaviour of the command bar during a session.");
+
+    CGFloat rowH = 46;
+    NSView *card1 = addCard(content, padX, cw, y, rowH * 4);
+    CGFloat cw1 = card1.bounds.size.width;
+    CGFloat ry = card1.bounds.size.height;
+
+    ry -= rowH;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 14, 200, 18), @"Stealth")];
+    HermesToggle *stealth = [[HermesToggle alloc] initWithFrame:NSMakeRect(cw1 - 16 - 38, ry + 12, 38, 22)];
+    [stealth setOn:gLastStealth];
+    [stealth setTarget:NSApp];
+    [stealth setAction:@selector(onStealthToggle:)];
+    [card1 addSubview:stealth];
+    gSetStealth = stealth;
+
+    ry -= rowH;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 14, 200, 18), @"Humanise typing")];
+    HermesToggle *humanise = [[HermesToggle alloc] initWithFrame:NSMakeRect(cw1 - 16 - 38, ry + 12, 38, 22)];
+    [humanise setOn:gLastHumanise];
+    [humanise setTarget:NSApp];
+    [humanise setAction:@selector(onHumaniseToggle:)];
+    [card1 addSubview:humanise];
+    gSetHumanise = humanise;
+
+    ry -= rowH;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 14, 200, 18), @"Typing delay")];
+    gSetDelay = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cw1 - 16 - 160, ry + 10, 160, 24) pullsDown:NO];
+    NSInteger presetIdx = 1;
+    for (int i = 0; i < 3; i++) {
+        [gSetDelay addItemWithTitle:kDelayPresetTitles[i]];
+        if (kDelayPresets[i] == gLastDelayMs) presetIdx = i;
+    }
+    [gSetDelay selectItemAtIndex:presetIdx];
+    [gSetDelay setTarget:NSApp];
+    [gSetDelay setAction:@selector(onDelayChanged:)];
+    [card1 addSubview:gSetDelay];
+
+    ry -= rowH;
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 14, 200, 18), @"Overlay opacity")];
+    CGFloat sliderX = cw1 - 16 - 200;
+    NSView *lowGlyph = opacityGlyph(NO);
+    lowGlyph.frame = NSMakeRect(sliderX, ry + 17, 14, 14);
+    [card1 addSubview:lowGlyph];
+    gSetOpacity = [[NSSlider alloc] initWithFrame:NSMakeRect(sliderX + 20, ry + 12, 120, 22)];
+    [gSetOpacity setMinValue:20];
+    [gSetOpacity setMaxValue:100];
+    [gSetOpacity setIntValue:gLastOpacity];
+    [gSetOpacity setContinuous:YES];
+    [gSetOpacity setTarget:NSApp];
+    [gSetOpacity setAction:@selector(onOpacityChanged:)];
+    [card1 addSubview:gSetOpacity];
+    NSView *highGlyph = opacityGlyph(YES);
+    highGlyph.frame = NSMakeRect(sliderX + 146, ry + 17, 14, 14);
+    [card1 addSubview:highGlyph];
+    gOpacityLabel = makeLabel(NSMakeRect(sliderX + 166, ry + 14, 40, 18), [NSString stringWithFormat:@"%d%%", gLastOpacity]);
+    [gOpacityLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
+    [gOpacityLabel setTextColor:hTextMuted()];
+    [card1 addSubview:gOpacityLabel];
+    y -= rowH * 4 + 14;
+
+    NSView *card2 = addCard(content, padX, cw, y, 44);
+    CGFloat cw2 = card2.bounds.size.width;
+    NSView *upDot = makeStatusDot(hTextMuted(), 6);
+    upDot.frame = NSMakeRect(16, 19, 6, 6);
+    [card2 addSubview:upDot];
+    NSTextField *upLbl = makeDesc(NSMakeRect(30, 13, cw2 - 140, 18), @"Checking for updates...");
+    [card2 addSubview:upLbl];
+    gUpdatesLabel = upLbl;
+    gUpdatesDot = upDot;
+    NSButton *upBtn = makePillButton(@"View releases", 0, @selector(onSettingsUpdatesClick:));
+    upBtn.frame = NSMakeRect(cw2 - 16 - 110, 8, 110, 26);
+    [card2 addSubview:upBtn];
+    applyUpdateStatus();
+    y -= 44 + 14;
+
+    addSaveButton(content, padX, cw, &y);
+}
+
+static void buildProviderPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Provider & Model", @"Bring your own key, or use a Pass. Never both at once.");
+
+    NSView *card1 = addCard(content, padX, cw, y, 44 * 3);
+    CGFloat cw1 = card1.bounds.size.width;
+    CGFloat ry = card1.bounds.size.height;
+
+    ry -= 44;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 11, 100, 18), @"Provider")];
+    gSetProvider = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cw1 - 16 - 200, ry + 8, 200, 24) pullsDown:NO];
+    [gSetProvider addItemWithTitle:@"Groq"];
+    [gSetProvider addItemWithTitle:@"Cerebras"];
+    [gSetProvider selectItemWithTitle:gLastProvider];
+    [gSetProvider setTarget:NSApp];
+    [gSetProvider setAction:@selector(onProviderChanged:)];
+    [card1 addSubview:gSetProvider];
+
+    ry -= 44;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 11, 100, 18), @"Model")];
+    gSetModel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cw1 - 16 - 200, ry + 8, 200, 24) pullsDown:NO];
+    [gSetModel setTarget:NSApp];
+    [gSetModel setAction:@selector(onModelChanged:)];
+    [card1 addSubview:gSetModel];
+
+    ry -= 44;
+    [card1 addSubview:makeDesc(NSMakeRect(16, ry + 13, 220, 18), @"Selected model accepts")];
+    gSetModelTag = makeLabel(NSMakeRect(cw1 - 16 - 140, ry + 13, 140, 18), @"");
+    [gSetModelTag setFont:[NSFont monospacedSystemFontOfSize:9.5 weight:NSFontWeightMedium]];
+    [gSetModelTag setAlignment:NSTextAlignmentRight];
+    [card1 addSubview:gSetModelTag];
+    y -= 44 * 3 + 14;
+
+    BOOL hasKey = gLastApiKey.length > 0;
+    BOOL hideBYOK = gLastPassActive && !hasKey;
+    if (!hideBYOK) {
+        NSView *card2 = addCard(content, padX, cw, y, 44);
+        CGFloat cw2 = card2.bounds.size.width;
+        [card2 addSubview:makeLabel(NSMakeRect(16, 13, 200, 18), @"API Key (BYOK)")];
+        CGFloat keyBtnW = 56, keyFieldW = 130, keyGap = 8;
+        gSetAPIKey = makeField(NSMakeRect(cw2 - 16 - keyBtnW - keyGap - keyFieldW, 11, keyFieldW, 22), gLastApiKey);
+        [gSetAPIKey setEnabled:!hasKey];
+        [gSetAPIKey setDelegate:gFieldSync];
+        [card2 addSubview:gSetAPIKey];
+        NSButton *editBtn = makePillButton(hasKey ? @"Edit" : @"Done", 0, @selector(onFieldEditToggle:));
+        editBtn.frame = NSMakeRect(cw2 - 16 - keyBtnW, 11, keyBtnW, 22);
+        [card2 addSubview:editBtn];
+        y -= 44 + 14;
+    }
+
+    addSaveButton(content, padX, cw, &y);
+    populateModelPopup(gLastProvider, gLastModel);
+    updateModelTag();
+}
+
+static void buildPassPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Pass", @"A prepaid balance for shared-key access. No BYOK required.");
+
+    NSView *card1 = addCard(content, padX, cw, y, 96);
+    CGFloat ringSize = 76;
+    NSView *ringWrap = [[NSView alloc] initWithFrame:NSMakeRect(20, 10, ringSize, ringSize)];
+    [ringWrap setWantsLayer:YES];
+    CAShapeLayer *track = ringArcLayer(ringWrap.bounds, 6, hBgElevatedHover(), 1.0);
+    [ringWrap.layer addSublayer:track];
+    CAShapeLayer *val = ringArcLayer(ringWrap.bounds, 6, hermesGrayLight(), gLastPassPct / 100.0);
+    [ringWrap.layer addSublayer:val];
+    NSTextField *pctLbl = makeLabel(NSMakeRect(0, ringSize / 2 - 10, ringSize, 20), [NSString stringWithFormat:@"%d%%", gLastPassPct]);
+    [pctLbl setFont:[NSFont monospacedDigitSystemFontOfSize:15 weight:NSFontWeightSemibold]];
+    [pctLbl setAlignment:NSTextAlignmentCenter];
+    [ringWrap addSubview:pctLbl];
+    [card1 addSubview:ringWrap];
+
+    CGFloat copyX = 20 + ringSize + 22;
+    NSView *statusDot = makeStatusDot(gLastPassActive ? hGood() : hTextFaint(), 6);
+    statusDot.frame = NSMakeRect(copyX, 62, 6, 6);
+    [card1 addSubview:statusDot];
+    NSTextField *statusLbl = makeLabel(NSMakeRect(copyX + 12, 56, 220, 18), gLastPassActive ? @"Pass active" : @"Pass inactive");
+    [statusLbl setFont:[NSFont boldSystemFontOfSize:12.5]];
+    [statusLbl setTextColor:gLastPassActive ? hGood() : hTextMuted()];
+    [card1 addSubview:statusLbl];
+    [card1 addSubview:makeDesc(NSMakeRect(copyX, 36, 260, 16), @"Balance refreshes after each answer")];
+    y -= 96 + 14;
+
+    NSView *card2 = addCard(content, padX, cw, y, 44);
+    CGFloat cw2 = card2.bounds.size.width;
+    [card2 addSubview:makeLabel(NSMakeRect(16, 13, 100, 18), @"Pass key")];
+    CGFloat passBtnW = 68, passFieldW = 130, passGap = 8;
+    BOOL hasPassKey = gLastPassKey.length > 0;
+    gSetPassKey = makeField(NSMakeRect(cw2 - 16 - passBtnW - passGap - passFieldW, 11, passFieldW, 22), gLastPassKey);
+    [gSetPassKey setEnabled:!hasPassKey];
+    [gSetPassKey setDelegate:gFieldSync];
+    [card2 addSubview:gSetPassKey];
+    NSButton *replaceBtn = makePillButton(hasPassKey ? @"Replace" : @"Done", 1, @selector(onFieldEditToggle:));
+    replaceBtn.frame = NSMakeRect(cw2 - 16 - passBtnW, 11, passBtnW, 22);
+    [card2 addSubview:replaceBtn];
+    y -= 44 + 14;
+
+    addSaveButton(content, padX, cw, &y);
+}
+
+static void buildResumePane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Resume", @"Grounds behavioural answers in your background. Ignored for selection and coding questions.");
+
+    CGFloat cardH = 260;
+    NSView *card = addCard(content, padX, cw, y, cardH);
+    CGFloat cw1 = card.bounds.size.width;
+    [card addSubview:makeLabel(NSMakeRect(16, cardH - 30, 200, 18), @"Candidate profile")];
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 16, cw1 - 32, cardH - 56)];
+    [scroll setHasVerticalScroller:YES];
+    [scroll setDrawsBackground:NO];
+    [scroll setWantsLayer:YES];
+    scroll.layer.cornerRadius = 8.0;
+    scroll.layer.masksToBounds = YES;
+    scroll.layer.borderWidth = 1.0;
+    scroll.layer.borderColor = hHairline().CGColor;
+    HermesResumeTextView *tv = [[HermesResumeTextView alloc] initWithFrame:scroll.bounds];
+    [tv setString:gLastResume];
+    [tv setBackgroundColor:hBgElevated()];
+    [tv setTextColor:hTextPrimary()];
+    [tv setFont:[NSFont systemFontOfSize:12]];
+    [tv setTextContainerInset:NSMakeSize(10, 8)];
+    [tv textContainer].lineFragmentPadding = 6.0;
+    [tv setDelegate:gFieldSync];
+    [scroll setDocumentView:tv];
+    [card addSubview:scroll];
+    gSetResume = tv;
+    y -= cardH + 14;
+
+    addSaveButton(content, padX, cw, &y);
+}
+
+static void buildSpeechPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Speech", @"On-device transcription of the call audio. Nothing leaves the machine.");
+
+    NSView *card = addCard(content, padX, cw, y, 44);
+    CGFloat cw1 = card.bounds.size.width;
+    [card addSubview:makeLabel(NSMakeRect(16, 13, 100, 18), @"Locale")];
+    NSArray *locales = @[@"en-US", @"en-GB", @"es-ES", @"fr-FR", @"de-DE",
+                          @"it-IT", @"pt-BR", @"zh-Hans", @"ja-JP", @"ko-KR"];
+    gSetLocale = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cw1 - 16 - 160, 9, 160, 24) pullsDown:NO];
+    for (NSString *loc in locales) {
+        [gSetLocale addItemWithTitle:loc];
+    }
+    if (![locales containsObject:gLastLocale]) {
+        [gSetLocale addItemWithTitle:gLastLocale];
+    }
+    [gSetLocale selectItemWithTitle:gLastLocale];
+    [gSetLocale setTarget:NSApp];
+    [gSetLocale setAction:@selector(onLocaleChanged:)];
+    [card addSubview:gSetLocale];
+    y -= 44 + 14;
+
+    addSaveButton(content, padX, cw, &y);
+}
+
+static void buildHotkeysPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Hotkeys", @"Global while Hermes is running. Not editable in this preview.");
+
+    NSArray<NSArray<NSString *> *> *rows = @[
+        @[@"Capture", @"⌘H"], @[@"Send", @"⌘⏎"],
+        @[@"Auto-type", @"⌘T"], @[@"Listen", @"⌘L"],
+        @[@"Pin reference", @"⌘P"], @[@"Cancel / abort", @"ESC"],
+    ];
+    CGFloat rowH = 40;
+    NSInteger rowCount = (rows.count + 1) / 2;
+    NSView *card = addCard(content, padX, cw, y, rowH * rowCount);
+    CGFloat cw1 = card.bounds.size.width;
+    CGFloat colW = cw1 / 2.0;
+    for (NSInteger i = 0; i < rows.count; i++) {
+        NSInteger col = i % 2;
+        NSInteger row = i / 2;
+        CGFloat rx = col * colW;
+        CGFloat ry = card.bounds.size.height - (row + 1) * rowH;
+        if (row < rowCount - 1) addRowDivider(card, ry, cw1);
+        if (col == 0) {
+            NSView *vline = [[NSView alloc] initWithFrame:NSMakeRect(colW, ry, 1, rowH)];
+            [vline setWantsLayer:YES];
+            vline.layer.backgroundColor = hHairline().CGColor;
+            [card addSubview:vline];
+        }
+        [card addSubview:makeDesc(NSMakeRect(rx + 16, ry + 12, colW - 90, 16), rows[i][0])];
+        NSTextField *kbd = makeLabel(NSMakeRect(rx + colW - 60, ry + 9, 44, 20), rows[i][1]);
+        [kbd setAlignment:NSTextAlignmentCenter];
+        [kbd setFont:[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular]];
+        [kbd setWantsLayer:YES];
+        kbd.layer.backgroundColor = hBgElevated().CGColor;
+        kbd.layer.borderWidth = 1.0;
+        kbd.layer.borderColor = hHairline().CGColor;
+        kbd.layer.cornerRadius = 5.0;
+        [card addSubview:kbd];
+    }
+}
+
+static void buildAboutPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat ch = content.bounds.size.height;
+    CGFloat cx = cw / 2.0;
+
+    NSView *glyph = [[NSView alloc] initWithFrame:NSMakeRect(cx - 40, ch - 180, 80, 80)];
+    [glyph setWantsLayer:YES];
+    glyph.layer.cornerRadius = 20.0;
+    CAGradientLayer *grad = [CAGradientLayer layer];
+    grad.frame = glyph.bounds;
+    grad.colors = @[ (id)hermesGrayLight().CGColor, (id)hermesGrayDark().CGColor ];
+    grad.startPoint = CGPointMake(0, 0);
+    grad.endPoint = CGPointMake(1, 1);
+    grad.cornerRadius = 20.0;
+    [glyph.layer addSublayer:grad];
+    [content addSubview:glyph];
+
+    NSTextField *nameLbl = makeLabel(NSMakeRect(0, ch - 220, cw, 26), @"H");
+    [nameLbl setFont:[NSFont boldSystemFontOfSize:22]];
+    [nameLbl setAlignment:NSTextAlignmentCenter];
+    [nameLbl setFrame:NSMakeRect(cx - 40, ch - 155, 80, 30)];
+    [nameLbl setTextColor:[NSColor whiteColor]];
+    [content addSubview:nameLbl];
+
+    NSTextField *title = makeLabel(NSMakeRect(0, ch - 220, cw, 26), @"Hermes");
+    [title setFont:[NSFont boldSystemFontOfSize:18]];
+    [title setAlignment:NSTextAlignmentCenter];
+    [content addSubview:title];
+
+    NSTextField *tagline = makeDesc(NSMakeRect(0, ch - 250, cw, 34), @"Messenger god, god of stealth.");
+    [tagline setAlignment:NSTextAlignmentCenter];
+    [content addSubview:tagline];
+
+    NSTextField *ver = makeDesc(NSMakeRect(0, ch - 268, cw, 18), [NSString stringWithFormat:@"Version %@ · Built with Go and AppKit", HERMES_VERSION]);
+    [ver setAlignment:NSTextAlignmentCenter];
+    [content addSubview:ver];
+
+    NSButton *btn = makePillButton(@"Open GitHub Releases", 0, @selector(onSettingsUpdatesClick:));
+    btn.frame = NSMakeRect(cx - 90, ch - 310, 180, 28);
+    [content addSubview:btn];
+}
+
+static void showSettingsPane(SettingsPane pane) {
+    if (!gSettingsContent) return;
+    for (NSView *v in gSettingsContent.subviews) [v removeFromSuperview];
+    gSetAPIKey = nil; gSetProvider = nil; gSetModel = nil; gSetModelTag = nil;
+    gSetStealth = nil; gSetHumanise = nil; gSetDelay = nil; gSetResume = nil;
+    gSetLocale = nil; gSetPassKey = nil; gSetOpacity = nil; gOpacityLabel = nil;
+    gUpdatesLabel = nil; gUpdatesDot = nil;
+    for (HermesNavRow *btn in gSidebarRows) {
+        [btn setActiveRow:(btn.tag == pane)];
+    }
+    switch (pane) {
+        case SettingsPaneGeneral: buildGeneralPane(); break;
+        case SettingsPaneProvider: buildProviderPane(); break;
+        case SettingsPanePass: buildPassPane(); break;
+        case SettingsPaneResume: buildResumePane(); break;
+        case SettingsPaneSpeech: buildSpeechPane(); break;
+        case SettingsPaneHotkeys: buildHotkeysPane(); break;
+        case SettingsPaneAbout: buildAboutPane(); break;
+    }
+}
+
+// applyUpdateStatus paints the cached gUpdateStatus onto the Updates row.
+// Cached (rather than re-fetched) because the async check may complete after
+// the user has navigated to a different pane and torn the row's views down.
+static void applyUpdateStatus(void) {
+    if (!gUpdatesLabel || !gUpdatesDot) return;
+    switch (gUpdateStatus) {
+        case UpdateStatusChecking:
+            [gUpdatesLabel setStringValue:@"Checking for updates..."];
+            gUpdatesDot.layer.backgroundColor = hTextFaint().CGColor;
+            break;
+        case UpdateStatusUpToDate:
+            [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"You're on the latest version · v%@", HERMES_VERSION]];
+            gUpdatesDot.layer.backgroundColor = hGood().CGColor;
+            break;
+        case UpdateStatusAvailable:
+            [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"Update available · v%@", nsOrEmpty(gUpdateLatestTag)]];
+            gUpdatesDot.layer.backgroundColor = hTextMuted().CGColor;
+            break;
+        case UpdateStatusFailed:
+            [gUpdatesLabel setStringValue:@"Update check failed"];
+            gUpdatesDot.layer.backgroundColor = hBad().CGColor;
+            break;
+    }
+}
+
+static void checkForUpdates(void) {
+    NSString *url = [NSString stringWithFormat:@"https://api.github.com/repos/%@/%@/releases/latest",
+                     HERMES_GITHUB_OWNER, HERMES_GITHUB_REPO];
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:url]
+                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *tag = nil;
+            if (!error && data) {
+                NSError *jsonErr = nil;
+                id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonErr];
+                if ([obj isKindOfClass:[NSDictionary class]]) {
+                    NSString *rawTag = obj[@"tag_name"];
+                    if ([rawTag isKindOfClass:[NSString class]]) {
+                        tag = [rawTag stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"vV"]];
+                    }
+                }
+            }
+            if (tag.length == 0) {
+                gUpdateStatus = UpdateStatusFailed;
+            } else if ([tag isEqualToString:HERMES_VERSION]) {
+                gUpdateStatus = UpdateStatusUpToDate;
+            } else {
+                gUpdateStatus = UpdateStatusAvailable;
+                [gUpdateLatestTag release];
+                gUpdateLatestTag = [tag retain];
+            }
+            // Only touch the label/dot if the General pane is still on screen;
+            // otherwise the views were already torn down by showSettingsPane.
+            if (gUpdatesLabel && gUpdatesLabel.superview) {
+                applyUpdateStatus();
+            }
+        });
+    }];
+    [task resume];
+}
+
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON,
-                               bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale) {
-    // Copy the C strings immediately: this function is async, and the caller
-    // frees the buffers once the C call returns.
+                               bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale,
+                               const char *passKey, bool passActive, int passPct, int opacity) {
     NSString *nsApiKey = [NSString stringWithUTF8String:apiKey ?: ""];
     NSString *nsProvider = [NSString stringWithUTF8String:provider ?: "Groq"];
     NSString *nsModel = [NSString stringWithUTF8String:model ?: ""];
     NSString *nsResume = [NSString stringWithUTF8String:resumeProfile ?: ""];
     NSString *nsLocale = [NSString stringWithUTF8String:speechLocale ?: "en-US"];
+    NSString *nsPassKey = [NSString stringWithUTF8String:passKey ?: ""];
     NSString *nsSettingsJSON = [NSString stringWithUTF8String:settingsJSON ?: "{}"];
     NSData *jsonData = [nsSettingsJSON dataUsingEncoding:NSUTF8StringEncoding];
     NSError *jsonErr = nil;
@@ -1432,131 +2510,120 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
             gModelNames = [[NSMutableArray alloc] init];
         }
 
+        if (gLastApiKey != nsApiKey) { [gLastApiKey release]; gLastApiKey = [nsApiKey retain]; }
+        if (gLastProvider != nsProvider) { [gLastProvider release]; gLastProvider = [nsProvider retain]; }
+        if (gLastModel != nsModel) { [gLastModel release]; gLastModel = [nsModel retain]; }
+        if (gLastResume != nsResume) { [gLastResume release]; gLastResume = [nsResume retain]; }
+        if (gLastLocale != nsLocale) { [gLastLocale release]; gLastLocale = [nsLocale retain]; }
+        if (gLastPassKey != nsPassKey) { [gLastPassKey release]; gLastPassKey = [nsPassKey retain]; }
+        gLastStealth = stealth;
+        gLastHumanise = humanise;
+        gLastDelayMs = delayMs;
+        gLastPassActive = passActive;
+        gLastPassPct = passPct;
+        gLastOpacity = opacity;
+        gUpdateStatus = UpdateStatusChecking;
+        gSettingsDirty = NO;
+
+        if (!gFieldSync) {
+            gFieldSync = [[HermesFieldSync alloc] init];
+        }
+
+        const CGFloat settingsW = 900.0;
+        const CGFloat settingsH = 510.0;
+        const CGFloat sidebarW = 212.0;
         NSRect barFrame = [gPanel frame];
-        const CGFloat settingsW = 420.0;
-        const CGFloat settingsH = 420.0;
-        CGFloat sx = barFrame.origin.x - 65.0;
+        CGFloat sx = barFrame.origin.x - (settingsW - kBarWidth) / 2.0;
         CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 35.0;
-        // If there isn't room below the bar, open above it instead.
         if (sy < 0.0) {
             sy = barFrame.origin.y + kBarHeight + 4.0;
         }
         NSRect frame = NSMakeRect(sx, sy, settingsW, settingsH);
         NSWindow *win = [[NSWindow alloc] initWithContentRect:frame
-                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskFullSizeContentView
                                                       backing:NSBackingStoreBuffered
                                                         defer:NO];
-        [win setTitle:@"Hermes Settings"];
-        NSView *root = [[NSView alloc] initWithFrame:frame];
+        [win setTitlebarAppearsTransparent:YES];
+        [win setTitleVisibility:NSWindowTitleHidden];
+        [win setOpaque:NO];
+        [win setBackgroundColor:[NSColor clearColor]];
+        [win setHasShadow:YES];
+        [win setMovableByWindowBackground:YES];
+
+        NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, settingsW, settingsH)];
         [root setWantsLayer:YES];
-        root.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.12 alpha:0.95].CGColor;
+        root.layer.backgroundColor = [NSColor clearColor].CGColor;
+        root.layer.cornerRadius = 12.0;
+        root.layer.masksToBounds = YES;
         [win setContentView:root];
+
+        NSVisualEffectView *blur = [[NSVisualEffectView alloc] initWithFrame:root.bounds];
+        [blur setMaterial:NSVisualEffectMaterialHUDWindow];
+        [blur setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+        [blur setState:NSVisualEffectStateActive];
+        [blur setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [root addSubview:blur];
+
+        NSView *tint = [[NSView alloc] initWithFrame:root.bounds];
+        [tint setWantsLayer:YES];
+        tint.layer.backgroundColor = [hBgPanel() colorWithAlphaComponent:0.86].CGColor;
+        [tint setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [root addSubview:tint];
 
         if (!gSettingsDelegate) {
             gSettingsDelegate = [[HermesSettingsDelegate alloc] init];
         }
         [win setDelegate:gSettingsDelegate];
 
-        CGFloat y = 30;
+        NSView *sidebar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, sidebarW, settingsH)];
+        [sidebar setWantsLayer:YES];
+        sidebar.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.04 alpha:0.55].CGColor;
+        NSView *sidebarBorder = [[NSView alloc] initWithFrame:NSMakeRect(sidebarW - 1, 0, 1, settingsH)];
+        [sidebarBorder setWantsLayer:YES];
+        sidebarBorder.layer.backgroundColor = hHairline().CGColor;
+        [sidebar addSubview:sidebarBorder];
+        [root addSubview:sidebar];
 
-        // Save: last item, wide, light gray, with hover.
-        HermesSaveButton *save = [[HermesSaveButton alloc] initWithFrame:NSMakeRect(20, y, 380, 32)];
-        [save setTitle:@"Save"];
-        [save setTarget:nil];
-        [save setAction:@selector(onSettingsSave:)];
-        [save setBezelStyle:NSBezelStyleRegularSquare];
-        [save setBordered:NO];
-        [save setWantsLayer:YES];
-        [save setFont:[NSFont systemFontOfSize:14]];
-        [save setContentTintColor:[NSColor blackColor]];
-        save.layer.backgroundColor = hermesAmber().CGColor;
-        save.layer.cornerRadius = 6.0;
-        [root addSubview:save];
-        y += 42;
+        NSTextField *brand = makeLabel(NSMakeRect(16, settingsH - 58, sidebarW - 32, 20), @"Hermes");
+        [brand setFont:[NSFont boldSystemFontOfSize:13.5]];
+        [sidebar addSubview:brand];
 
-        // Resume box placed just before Save.
-        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(110, y, 280, 80)];
-        [scroll setHasVerticalScroller:YES];
-        [scroll setWantsLayer:YES];
-        scroll.layer.cornerRadius = 6.0;
-        scroll.layer.masksToBounds = YES;
-        scroll.layer.borderWidth = 1.0;
-        scroll.layer.borderColor = [NSColor colorWithCalibratedWhite:0.25 alpha:1.0].CGColor;
-
-        HermesResumeTextView *tv = [[HermesResumeTextView alloc] initWithFrame:scroll.bounds];
-        [tv setString:nsResume];
-        [tv setBackgroundColor:[NSColor colorWithCalibratedWhite:0.18 alpha:1.0]];
-        [tv setTextColor:[NSColor whiteColor]];
-        [tv setFont:[NSFont systemFontOfSize:12]];
-        [tv setTextContainerInset:NSMakeSize(8, 6)];
-        [tv textContainer].lineFragmentPadding = 6.0;
-        [scroll setDocumentView:tv];
-        [root addSubview:makeLabel(NSMakeRect(20, y + 30, 90, 22), @"Resume:")];
-        [root addSubview:scroll];
-        gSetResume = tv;
-        y += 90;
-
-        NSArray *locales = @[@"en-US", @"en-GB", @"es-ES", @"fr-FR", @"de-DE",
-                              @"it-IT", @"pt-BR", @"zh-Hans", @"ja-JP", @"ko-KR"];
-        gSetLocale = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, y, 280, 22) pullsDown:NO];
-        for (NSString *loc in locales) {
-            [gSetLocale addItemWithTitle:loc];
+        NSArray *titles = @[@"General", @"Provider & Model", @"Pass", @"Resume", @"Speech", @"Hotkeys", @"About"];
+        NSArray *icons = @[@"gearshape", @"cpu", @"creditcard", @"doc.text", @"waveform", @"keyboard", @"info.circle"];
+        gSidebarRows = [[NSMutableArray alloc] init];
+        CGFloat btnY = settingsH - 96;
+        for (NSInteger i = 0; i < titles.count; i++) {
+            HermesNavRow *btn = (HermesNavRow *)makeSidebarRow(titles[i], icons[i], i);
+            [btn setFrame:NSMakeRect(10, btnY, sidebarW - 20, 28)];
+            [sidebar addSubview:btn];
+            [gSidebarRows addObject:btn];
+            btnY -= 29;
         }
-        NSString *currentLocale = nsLocale;
-        if (![locales containsObject:currentLocale]) {
-            [gSetLocale addItemWithTitle:currentLocale];
-        }
-        [gSetLocale selectItemWithTitle:currentLocale];
-        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Locale:")];
-        [root addSubview:gSetLocale];
-        y += 36;
 
-        gSetDelay = makeField(NSMakeRect(110, y, 80, 22), [NSString stringWithFormat:@"%d", delayMs]);
-        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Delay (ms):")];
-        [root addSubview:gSetDelay];
-        y += 36;
+        NSView *footer = [[NSView alloc] initWithFrame:NSMakeRect(10, 14, sidebarW - 20, 16)];
+        NSView *stealthDot = makeStatusDot(stealth ? hGood() : hTextFaint(), 6);
+        stealthDot.frame = NSMakeRect(0, 5, 6, 6);
+        [footer addSubview:stealthDot];
+        NSTextField *stealthLbl = makeDesc(NSMakeRect(11, 0, 100, 14), stealth ? @"Stealth active" : @"Stealth off");
+        [stealthLbl setFont:[NSFont systemFontOfSize:10]];
+        [footer addSubview:stealthLbl];
+        NSTextField *verLbl = makeDesc(NSMakeRect(sidebarW - 20 - 50, 0, 50, 14), [NSString stringWithFormat:@"v%@", HERMES_VERSION]);
+        [verLbl setFont:[NSFont systemFontOfSize:10]];
+        [verLbl setAlignment:NSTextAlignmentRight];
+        [footer addSubview:verLbl];
+        [sidebar addSubview:footer];
 
-        gSetHumanise = [[NSButton alloc] initWithFrame:NSMakeRect(110, y, 160, 22)];
-        [gSetHumanise setButtonType:NSButtonTypeSwitch];
-        [gSetHumanise setTitle:@"Humanise typing"];
-        [gSetHumanise setState:humanise ? NSControlStateValueOn : NSControlStateValueOff];
-        [root addSubview:gSetHumanise];
-        y += 28;
+        gSettingsContent = [[NSView alloc] initWithFrame:NSMakeRect(sidebarW, 0, settingsW - sidebarW, settingsH)];
+        [gSettingsContent setWantsLayer:YES];
+        gSettingsContent.layer.backgroundColor = [NSColor clearColor].CGColor;
+        [root addSubview:gSettingsContent];
 
-        gSetStealth = [[NSButton alloc] initWithFrame:NSMakeRect(110, y, 120, 22)];
-        [gSetStealth setButtonType:NSButtonTypeSwitch];
-        [gSetStealth setTitle:@"Stealth"];
-        [gSetStealth setState:stealth ? NSControlStateValueOn : NSControlStateValueOff];
-        [root addSubview:gSetStealth];
-        y += 36;
-
-        // Provider dropdown (Groq / Cerebras).
-        gSetProvider = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, y, 280, 22) pullsDown:NO];
-        [gSetProvider addItemWithTitle:@"Groq"];
-        [gSetProvider addItemWithTitle:@"Cerebras"];
-        [gSetProvider selectItemWithTitle:nsProvider];
-        [gSetProvider setTarget:nil];
-        [gSetProvider setAction:@selector(onProviderChanged:)];
-        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Provider:")];
-        [root addSubview:gSetProvider];
-        y += 36;
-
-        // Model dropdown, repopulated when Provider changes.
-        gSetModel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, y, 280, 22) pullsDown:NO];
-        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"Model:")];
-        [root addSubview:gSetModel];
-        y += 36;
-
-        gSetAPIKey = makeField(NSMakeRect(110, y, 280, 22), nsApiKey);
-        [root addSubview:makeLabel(NSMakeRect(20, y, 90, 22), @"API Key:")];
-        [root addSubview:gSetAPIKey];
-
-        populateModelPopup(nsProvider, nsModel);
+        showSettingsPane(SettingsPaneGeneral);
+        checkForUpdates();
 
         gSettingsWindow = win;
         [NSApp activateIgnoringOtherApps:YES];
         [gSettingsWindow makeKeyAndOrderFront:nil];
-        [gSettingsWindow makeFirstResponder:gSetAPIKey];
     });
 }
 
@@ -1576,8 +2643,18 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
 - (void)onSettings:(id)sender;
 - (void)onCloseAnswer:(id)sender;
 - (void)onCopyAnswer:(id)sender;
+- (void)onCodeCardCopy:(id)sender;
 - (void)onSettingsSave:(id)sender;
 - (void)onProviderChanged:(id)sender;
+- (void)onModelChanged:(id)sender;
+- (void)onLocaleChanged:(id)sender;
+- (void)onDelayChanged:(id)sender;
+- (void)onStealthToggle:(id)sender;
+- (void)onHumaniseToggle:(id)sender;
+- (void)onFieldEditToggle:(id)sender;
+- (void)onSettingsPaneSelect:(id)sender;
+- (void)onOpacityChanged:(id)sender;
+- (void)onSettingsUpdatesClick:(id)sender;
 @end
 
 @implementation NSApplication (HermesOverlayActions)
@@ -1639,51 +2716,107 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     [pb clearContents];
     [pb setString:gAnswerBuffer forType:NSPasteboardTypeString];
 }
+- (void)onCodeCardCopy:(id)sender {
+    if (![sender isKindOfClass:[HermesCodeCopyButton class]]) return;
+    NSString *code = [(HermesCodeCopyButton *)sender codeText];
+    if (code.length == 0) return;
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:code forType:NSPasteboardTypeString];
+}
+- (void)onSettingsPaneSelect:(id)sender {
+    if (![sender isKindOfClass:[NSButton class]]) return;
+    showSettingsPane((SettingsPane)[sender tag]);
+}
+- (void)onOpacityChanged:(id)sender {
+    if (!gSetOpacity) return;
+    int pct = [gSetOpacity intValue];
+    if (pct < 20) pct = 20;
+    if (pct > 100) pct = 100;
+    [gOpacityLabel setStringValue:[NSString stringWithFormat:@"%d%%", pct]];
+    hermesOverlaySetOpacity(pct);
+    hermesOverlayOnOpacityChanged(pct);
+}
+- (void)onSettingsUpdatesClick:(id)sender {
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:HERMES_RELEASES_URL]];
+}
 - (void)onProviderChanged:(id)sender {
     NSString *provider = [[gSetProvider selectedItem] title];
-    fprintf(stderr, "Hermes: onProviderChanged -> %s\n", provider.UTF8String);
-    fflush(stderr);
+    if (gLastProvider != provider) { [gLastProvider release]; gLastProvider = [provider retain]; }
     NSDictionary *keys = gSettingsPayload[@"keys"];
     NSString *key = keys[provider];
     if (![key isKindOfClass:[NSString class]]) key = @"";
-    fprintf(stderr, "Hermes: key update gSetAPIKey=%p key=%s\n", (void *)gSetAPIKey, key.UTF8String);
-    fflush(stderr);
     [gSetAPIKey setStringValue:key];
-    fprintf(stderr, "Hermes: key update done\n");
-    fflush(stderr);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        fprintf(stderr, "Hermes: delayed block fired\n");
-        fflush(stderr);
-        populateModelPopup(provider, nil);
-    });
+    if (gLastApiKey != key) { [gLastApiKey release]; gLastApiKey = [key retain]; }
+    populateModelPopup(provider, nil);
+    if (gModelNames.count > 0) {
+        NSString *first = gModelNames[0];
+        if (gLastModel != first) { [gLastModel release]; gLastModel = [first retain]; }
+    }
+    updateModelTag();
+    markSettingsDirty();
+}
+- (void)onModelChanged:(id)sender {
+    if (!gSetModel || gModelNames.count == 0) return;
+    NSInteger idx = [gSetModel indexOfSelectedItem];
+    if (idx < 0 || idx >= (NSInteger)gModelNames.count) return;
+    NSString *model = gModelNames[idx];
+    if (gLastModel != model) { [gLastModel release]; gLastModel = [model retain]; }
+    updateModelTag();
+    markSettingsDirty();
+}
+- (void)onLocaleChanged:(id)sender {
+    if (!gSetLocale) return;
+    NSString *locale = [[gSetLocale selectedItem] title];
+    if (gLastLocale != locale) { [gLastLocale release]; gLastLocale = [locale retain]; }
+    markSettingsDirty();
+}
+- (void)onDelayChanged:(id)sender {
+    if (!gSetDelay) return;
+    NSInteger idx = [gSetDelay indexOfSelectedItem];
+    if (idx >= 0 && idx < 3) gLastDelayMs = kDelayPresets[idx];
+    markSettingsDirty();
+}
+- (void)onStealthToggle:(id)sender {
+    if (![sender isKindOfClass:[HermesToggle class]]) return;
+    gLastStealth = [(HermesToggle *)sender isOn];
+    markSettingsDirty();
+}
+- (void)onHumaniseToggle:(id)sender {
+    if (![sender isKindOfClass:[HermesToggle class]]) return;
+    gLastHumanise = [(HermesToggle *)sender isOn];
+    markSettingsDirty();
+}
+- (void)onFieldEditToggle:(id)sender {
+    if (![sender isKindOfClass:[NSButton class]]) return;
+    NSButton *btn = (NSButton *)sender;
+    NSTextField *field = (btn.tag == 0) ? gSetAPIKey : gSetPassKey;
+    if (!field) return;
+    BOOL enabling = ![field isEnabled];
+    [field setEnabled:enabling];
+    if (enabling) {
+        [btn setTitle:@"Done"];
+        [gSettingsWindow makeFirstResponder:field];
+    } else {
+        [btn setTitle:(btn.tag == 0) ? @"Edit" : @"Replace"];
+    }
 }
 
 - (void)onSettingsSave:(id)sender {
     if (!gSettingsWindow) return;
 
-    const char *apiKey = [[gSetAPIKey stringValue] UTF8String];
-    const char *provider = [[[gSetProvider selectedItem] title] UTF8String];
-    NSString *model = @"";
-    if (gSetModel && gModelNames.count > 0) {
-        NSInteger idx = [gSetModel indexOfSelectedItem];
-        if (idx >= 0 && idx < (NSInteger)gModelNames.count) {
-            model = gModelNames[idx];
-        }
-    }
-    if (model.length == 0 && gModelNames.count > 0) {
-        model = gModelNames[0];
-    }
-    const char *locale = [[[gSetLocale selectedItem] title] UTF8String];
-    const char *profile = [[gSetResume string] UTF8String];
-    int delay = [[gSetDelay stringValue] intValue];
-    if (delay < 1) delay = 90;
+    hermesOverlayOnSettingsSaved(
+        (char *)[nsOrEmpty(gLastApiKey) UTF8String],
+        (char *)[nsOrEmpty(gLastPassKey) UTF8String],
+        (char *)[nsOrEmpty(gLastProvider) UTF8String],
+        (char *)[nsOrEmpty(gLastModel) UTF8String],
+        gLastStealth ? 1 : 0,
+        gLastHumanise ? 1 : 0,
+        gLastDelayMs,
+        (char *)[nsOrEmpty(gLastResume) UTF8String],
+        (char *)[nsOrEmpty(gLastLocale) UTF8String]);
 
-    hermesOverlayOnSettingsSaved((char *)apiKey, (char *)provider, (char *)[model UTF8String],
-        [gSetStealth state] == NSControlStateValueOn ? 1 : 0,
-        [gSetHumanise state] == NSControlStateValueOn ? 1 : 0,
-        delay, (char *)profile, (char *)locale);
-
-    [gSettingsWindow close];
-    gSettingsWindow = nil;
+    gSettingsDirty = NO;
+    if (gSaveButton) applySaveButtonState(gSaveButton);
 }
 @end

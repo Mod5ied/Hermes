@@ -1,0 +1,11 @@
+{
+  "name": "hermes-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "durable_objects": {
+    "bindings": [{ "name": "PASS", "class_name": "PassDO" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PassDO"] }
+  ]
+}
