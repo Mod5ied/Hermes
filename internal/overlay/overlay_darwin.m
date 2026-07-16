@@ -17,7 +17,6 @@ static NSView *gAnswerBody = nil;
 static NSScrollView *gAnswerScroll = nil;
 static NSBox *gAnswerPanel = nil;
 static NSTextField *gCountdown = nil;
-static NSTextField *gModelNote = nil;
 static NSView *gIndicatorDot = nil;
 static NSProgressIndicator *gSpinner = nil;
 static NSTextField *gTrayBadge = nil;
@@ -29,6 +28,7 @@ static NSButton *gCaptureButton = nil;
 static NSButton *gHistoryButton = nil;
 static NSTextField *gPinBadge = nil;
 static int gCountdownGeneration = 0;
+static int gLastFontSize = 11;
 static NSButton *gPrevAnswerBtn = nil;
 static NSButton *gNextAnswerBtn = nil;
 static NSButton *gPinButton = nil;
@@ -448,20 +448,6 @@ void hermesOverlayInit(bool stealth) {
     input.layer.cornerRadius = 6.0;
     [composeCapsule addSubview:input];
     gInput = input;
-
-    // Model text-only note sits just below the input field.
-    NSTextField *modelNote = [[NSTextField alloc] initWithFrame:NSMakeRect(xpos, inputY + inputBoxHeight + 2, inputWidth, 12)];
-    [modelNote setEditable:NO];
-    [modelNote setBordered:NO];
-    [modelNote setDrawsBackground:NO];
-    [modelNote setTextColor:[NSColor colorWithCalibratedRed:1.0 green:0.6 blue:0.0 alpha:1.0]];
-    [modelNote setFont:[NSFont systemFontOfSize:10]];
-    [modelNote setStringValue:@""];
-    [modelNote setAlignment:NSTextAlignmentCenter];
-    [modelNote setRefusesFirstResponder:YES];
-    [modelNote setHidden:YES];
-    [composeCapsule addSubview:modelNote];
-    gModelNote = modelNote;
 
     // Status cluster: spinner then dot, pulled in from the capsule's right
     // wall toward the input field.
@@ -924,7 +910,7 @@ static CGFloat measureTextHeight(NSAttributedString *attrStr, CGFloat maxWidth) 
 }
 
 static NSAttributedString *formatAnswerText(NSString *text) {
-    NSFont *bodyFont = [NSFont systemFontOfSize:10];
+    NSFont *bodyFont = [NSFont systemFontOfSize:(CGFloat)gLastFontSize];
     NSColor *bodyColor = [NSColor whiteColor];
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
     [para setLineHeightMultiple:1.3];
@@ -1209,7 +1195,7 @@ void hermesOverlayAppendAnswer(const char *delta) {
         // Streaming just appends plain text to gAnswer as it arrives; no
         // parsing or highlighting until FinalizeAnswer calls rebuildAnswerBody.
         NSAttributedString *piece = [[NSAttributedString alloc] initWithString:s attributes:@{
-            NSFontAttributeName: [NSFont systemFontOfSize:10],
+            NSFontAttributeName: [NSFont systemFontOfSize:(CGFloat)gLastFontSize],
             NSForegroundColorAttributeName: [NSColor whiteColor]
         }];
         [[gAnswer textStorage] appendAttributedString:piece];
@@ -1332,20 +1318,6 @@ void hermesOverlaySetTrayCount(int n) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!gTrayBadge) return;
         [gTrayBadge setStringValue:n > 0 ? [NSString stringWithFormat:@"%d", n] : @""];
-    });
-}
-
-void hermesOverlaySetModelNote(const char *msg) {
-    NSString *s = msg ? [NSString stringWithUTF8String:msg] : @"";
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!gModelNote) return;
-        if (s.length == 0) {
-            [gModelNote setStringValue:@""];
-            [gModelNote setHidden:YES];
-        } else {
-            [gModelNote setStringValue:s];
-            [gModelNote setHidden:NO];
-        }
     });
 }
 
@@ -1594,6 +1566,8 @@ static NSPopUpButton *gSetLocale = nil;
 static NSTextField *gSetPassKey = nil;
 static NSSlider *gSetOpacity = nil;
 static NSTextField *gOpacityLabel = nil;
+static NSSlider *gSetFontSize = nil;
+static NSTextField *gFontSizeLabel = nil;
 static NSTextField *gUpdatesLabel = nil;
 static NSView *gUpdatesDot = nil;
 
@@ -2076,6 +2050,19 @@ void hermesOverlayRefreshPassPane(bool active, int pct) {
     });
 }
 
+void hermesOverlaySetFontSize(int pt) {
+    gLastFontSize = pt;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gSetFontSize) {
+            [gSetFontSize setIntValue:pt];
+        }
+        if (gFontSizeLabel) {
+            [gFontSizeLabel setStringValue:[NSString stringWithFormat:@"%d pt", pt]];
+        }
+        rebuildAnswerBody();
+    });
+}
+
 static void buildGeneralPane(void) {
     NSView *content = gSettingsContent;
     if (!content) return;
@@ -2085,7 +2072,7 @@ static void buildGeneralPane(void) {
     addPaneHeader(content, padX, cw, &y, @"General", @"Behaviour of the command bar during a session.");
 
     CGFloat rowH = 46;
-    NSView *card1 = addCard(content, padX, cw, y, rowH * 4);
+    NSView *card1 = addCard(content, padX, cw, y, rowH * 5);
     CGFloat cw1 = card1.bounds.size.width;
     CGFloat ry = card1.bounds.size.height;
 
@@ -2144,7 +2131,25 @@ static void buildGeneralPane(void) {
     [gOpacityLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
     [gOpacityLabel setTextColor:hTextMuted()];
     [card1 addSubview:gOpacityLabel];
-    y -= rowH * 4 + 14;
+
+    ry -= rowH;
+    addRowDivider(card1, ry, cw1);
+    [card1 addSubview:makeLabel(NSMakeRect(16, ry + 14, 200, 18), @"Font-size")];
+    CGFloat fsSliderX = cw1 - 16 - 200;
+    gSetFontSize = [[NSSlider alloc] initWithFrame:NSMakeRect(fsSliderX + 20, ry + 12, 120, 22)];
+    [gSetFontSize setMinValue:9];
+    [gSetFontSize setMaxValue:16];
+    [gSetFontSize setIntValue:gLastFontSize];
+    [gSetFontSize setContinuous:YES];
+    [gSetFontSize setTarget:NSApp];
+    [gSetFontSize setAction:@selector(onFontSizeChanged:)];
+    [card1 addSubview:gSetFontSize];
+    gFontSizeLabel = makeLabel(NSMakeRect(fsSliderX + 166, ry + 14, 40, 18), [NSString stringWithFormat:@"%d pt", gLastFontSize]);
+    [gFontSizeLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
+    [gFontSizeLabel setTextColor:hTextMuted()];
+    [card1 addSubview:gFontSizeLabel];
+
+    y -= rowH * 5 + 14;
 
     NSView *card2 = addCard(content, padX, cw, y, 44);
     CGFloat cw2 = card2.bounds.size.width;
@@ -2533,7 +2538,7 @@ static void checkForUpdates(void) {
 
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON,
                                bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale,
-                               const char *passKey, bool passActive, int passPct, int opacity) {
+                               const char *passKey, bool passActive, int passPct, int opacity, int fontSize) {
     NSString *nsApiKey = [NSString stringWithUTF8String:apiKey ?: ""];
     NSString *nsProvider = [NSString stringWithUTF8String:provider ?: "Groq"];
     NSString *nsModel = [NSString stringWithUTF8String:model ?: ""];
@@ -2572,6 +2577,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
         gLastPassActive = passActive;
         gLastPassPct = passPct;
         gLastOpacity = opacity;
+        gLastFontSize = fontSize;
         gUpdateStatus = UpdateStatusChecking;
         gSettingsDirty = NO;
 
@@ -2812,6 +2818,16 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     [gOpacityLabel setStringValue:[NSString stringWithFormat:@"%d%%", pct]];
     hermesOverlaySetOpacity(pct);
     hermesOverlayOnOpacityChanged(pct);
+}
+- (void)onFontSizeChanged:(id)sender {
+    if (!gSetFontSize) return;
+    int pt = [gSetFontSize intValue];
+    if (pt < 9) pt = 9;
+    if (pt > 16) pt = 16;
+    gLastFontSize = pt;
+    [gFontSizeLabel setStringValue:[NSString stringWithFormat:@"%d pt", pt]];
+    rebuildAnswerBody();
+    hermesOverlayOnFontSizeChanged(pt);
 }
 - (void)onSettingsUpdatesClick:(id)sender {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:HERMES_RELEASES_URL]];

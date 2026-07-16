@@ -87,6 +87,7 @@ type Config struct {
 	WorkerURL      string            `json:"worker_url,omitempty"`
 	PassActive     bool              `json:"pass_active,omitempty"`
 	OverlayOpacity int               `json:"overlay_opacity"`
+	AnswerFontSize int               `json:"answer_font_size"`
 }
 
 // Default returns a Config populated with defaults.
@@ -103,6 +104,7 @@ func Default() Config {
 		SpeechLocale:   "",
 		WorkerURL:      "https://hermes-proxy.ogwurup.workers.dev",
 		OverlayOpacity: 85,
+		AnswerFontSize: 11,
 	}
 }
 
@@ -217,6 +219,12 @@ func Load() (Config, error) {
 	}
 	if cfg.OverlayOpacity > 100 {
 		cfg.OverlayOpacity = 100
+	}
+	if cfg.AnswerFontSize < 9 {
+		cfg.AnswerFontSize = 9
+	}
+	if cfg.AnswerFontSize > 16 {
+		cfg.AnswerFontSize = 16
 	}
 
 	if key := os.Getenv(APIKeyEnv); key != "" {

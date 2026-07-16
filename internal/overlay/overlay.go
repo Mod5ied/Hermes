@@ -14,6 +14,7 @@ void hermesOverlaySetStealth(bool on);
 void hermesOverlaySetOpacity(int pct);
 void hermesOverlaySetInstruction(const char *text);
 void hermesOverlaySetResumeProfile(const char *text);
+void hermesOverlaySetFontSize(int pt);
 char *hermesOverlayGetInstruction(void);
 void hermesOverlayAppendInstruction(const char *text, bool final);
 void hermesOverlayBeginAnswer(void);
@@ -30,8 +31,7 @@ void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
 void hermesOverlayFreeString(char *s);
 void hermesOverlayRun(void);
-void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale, const char *passKey, bool passActive, int passPct, int opacity);
-void hermesOverlaySetModelNote(const char *msg);
+void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale, const char *passKey, bool passActive, int passPct, int opacity, int fontSize);
 void hermesOverlaySetCaptureEnabled(bool enabled);
 void hermesOverlayHideSettings(void);
 void hermesOverlayMove(int dx, int dy);
@@ -69,8 +69,10 @@ type Overlay interface {
 	RefreshPassPane(active bool, pct int)
 	SetStealth(on bool)
 	SetOpacity(pct int)
+	SetFontSize(pt int)
 	SetResumeProfile(text string)
 	OnOpacityChanged(handler func(pct int))
+	OnFontSizeChanged(handler func(pt int))
 	OnResumeUpload(handler func(path string) (string, error))
 	OnCapture(handler func())
 	OnSend(handler func())
@@ -81,7 +83,6 @@ type Overlay interface {
 	OnType(handler func())
 	OnTypeReady(handler func())
 	OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
-	SetModelNote(msg string)
 	SetCaptureEnabled(enabled bool)
 	OnHistoryEnter(handler func())
 	OnHistoryPrev(handler func())
@@ -129,6 +130,7 @@ type nativeOverlay struct {
 	onTypeReady    func()
 	onSettingsSaved func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
 	onOpacityChanged func(pct int)
+	onFontSizeChanged func(pt int)
 	onResumeUpload func(path string) (string, error)
 	onHistoryEnter func()
 	onHistoryPrev  func()
@@ -212,6 +214,10 @@ func (o *nativeOverlay) SetOpacity(pct int) {
 	C.hermesOverlaySetOpacity(C.int(pct))
 }
 
+func (o *nativeOverlay) SetFontSize(pt int) {
+	C.hermesOverlaySetFontSize(C.int(pt))
+}
+
 func (o *nativeOverlay) SetResumeProfile(text string) {
 	c := C.CString(text)
 	defer C.free(unsafe.Pointer(c))
@@ -220,6 +226,10 @@ func (o *nativeOverlay) SetResumeProfile(text string) {
 
 func (o *nativeOverlay) OnOpacityChanged(handler func(pct int)) {
 	o.onOpacityChanged = handler
+}
+
+func (o *nativeOverlay) OnFontSizeChanged(handler func(pt int)) {
+	o.onFontSizeChanged = handler
 }
 
 func (o *nativeOverlay) OnCapture(handler func()) {
@@ -325,12 +335,6 @@ func HideSettings() {
 	C.hermesOverlayHideSettings()
 }
 
-func (o *nativeOverlay) SetModelNote(msg string) {
-	c := C.CString(msg)
-	defer C.free(unsafe.Pointer(c))
-	C.hermesOverlaySetModelNote(c)
-}
-
 func (o *nativeOverlay) SetCaptureEnabled(enabled bool) {
 	C.hermesOverlaySetCaptureEnabled(C.bool(enabled))
 }
@@ -365,7 +369,7 @@ func ShowSettings(cfg config.Config, passKey string, passActive bool, passPct in
 	defer C.free(unsafe.Pointer(cPayloadJSON))
 
 	C.hermesOverlayShowSettings(cKey, cProvider, cModel, cPayloadJSON, C.bool(cfg.Stealth), C.bool(cfg.Humanise),
-		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale, cPassKey, C.bool(passActive), C.int(passPct), C.int(cfg.OverlayOpacity))
+		C.int(int(cfg.BaseDelay.Milliseconds())), cProfile, cLocale, cPassKey, C.bool(passActive), C.int(passPct), C.int(cfg.OverlayOpacity), C.int(cfg.AnswerFontSize))
 }
 
 //export hermesOverlayOnCapture
@@ -480,6 +484,13 @@ func hermesOverlayOnSettingsSaved(apiKey *C.char, passKey *C.char, provider *C.c
 func hermesOverlayOnOpacityChanged(pct C.int) {
 	if currentOverlay != nil && currentOverlay.onOpacityChanged != nil {
 		currentOverlay.onOpacityChanged(int(pct))
+	}
+}
+
+//export hermesOverlayOnFontSizeChanged
+func hermesOverlayOnFontSizeChanged(pt C.int) {
+	if currentOverlay != nil && currentOverlay.onFontSizeChanged != nil {
+		currentOverlay.onFontSizeChanged(int(pt))
 	}
 }
 

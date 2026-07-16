@@ -61,6 +61,7 @@ func run() {
 	ovl := overlay.New(cfg)
 	permissions.EnsureAll()
 	ovl.SetOpacity(cfg.OverlayOpacity)
+	ovl.SetFontSize(cfg.AnswerFontSize)
 
 	onPassBalance = func(pct int) {
 		passBalancePct = pct
@@ -322,17 +323,18 @@ func run() {
 	updateVisionUI := func() {
 		vision := config.IsVisionModel(cfg.Provider, cfg.Model)
 		ovl.SetCaptureEnabled(vision)
-		if vision {
-			ovl.SetModelNote("")
-		} else {
-			ovl.SetModelNote("Model is text-only, screenshots ignored.")
-		}
 	}
 
 	ovl.OnOpacityChanged(func(pct int) {
 		cfg.OverlayOpacity = pct
 		if err := config.Save(cfg); err != nil {
 			log.Printf("save opacity: %v", err)
+		}
+	})
+	ovl.OnFontSizeChanged(func(pt int) {
+		cfg.AnswerFontSize = pt
+		if err := config.Save(cfg); err != nil {
+			log.Printf("save font size: %v", err)
 		}
 	})
 
