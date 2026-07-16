@@ -169,12 +169,16 @@ func (c *openAIClient) Solve(ctx context.Context, messages []Message, onDelta fu
 
 func (c *openAIClient) buildBody(messages []Message) ([]byte, error) {
 	req := map[string]interface{}{
-		"model":               c.model,
-		"stream":              true,
-		"temperature":         0.3,
-		"top_p":               0.95,
+		"model":                 c.model,
+		"stream":                true,
+		"temperature":           0.3,
+		"top_p":                 0.95,
 		"max_completion_tokens": 768,
-		"messages":            buildAPIMessages(messages),
+		"messages":              buildAPIMessages(messages),
+	}
+	// Keep reasoning models fast and cheap in live use. Only gate gpt-oss models.
+	if strings.HasPrefix(c.model, "gpt-oss") {
+		req["reasoning_effort"] = "low"
 	}
 	return json.Marshal(req)
 }

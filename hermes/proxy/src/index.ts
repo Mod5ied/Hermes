@@ -73,6 +73,11 @@ export default {
       body.stream = true;
       body.stream_options = { include_usage: true };
 
+      // Keep reasoning models fast and cheap in live use. Only gate gpt-oss models.
+      if (model.startsWith("gpt-oss")) {
+        body.reasoning_effort = "low";
+      }
+
       const upstream = await fetch(`${info.baseURL}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", "authorization": `Bearer ${providerKey(env, info.provider)}` },
