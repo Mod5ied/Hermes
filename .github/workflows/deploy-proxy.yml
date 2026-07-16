@@ -3,6 +3,7 @@ name: Deploy Hermes Proxy
 on:
   push:
     branches: [main]
+    paths: ['hermes/proxy/**']
   workflow_dispatch:
 
 jobs:
