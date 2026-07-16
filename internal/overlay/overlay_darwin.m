@@ -2066,6 +2066,16 @@ static void updateModelTag(void) {
 static void showSettingsPane(SettingsPane pane);
 static void applyUpdateStatus(void);
 
+void hermesOverlayRefreshPassPane(bool active, int pct) {
+    gLastPassActive = active;
+    gLastPassPct = pct;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gSettingsContent && gSetPassKey) {
+            showSettingsPane(SettingsPanePass);
+        }
+    });
+}
+
 static void buildGeneralPane(void) {
     NSView *content = gSettingsContent;
     if (!content) return;

@@ -359,16 +359,19 @@ func run() {
 				_ = pass.Clear()
 				log.Printf("pass activation: %v", err)
 				ovl.Flash("Pass activation failed: " + err.Error())
+				ovl.RefreshPassPane(false, 0)
 			} else {
 				cfg.PassActive = true
 				passBalancePct = act.BalancePct
 				ovl.SetPassBalance(true, act.BalancePct)
 				ovl.Flash(fmt.Sprintf("Pass active - %d%%", act.BalancePct))
+				ovl.RefreshPassPane(true, act.BalancePct)
 			}
 		} else if cfg.PassActive {
 			cfg.PassActive = false
 			passBalancePct = 0
 			_ = pass.Clear()
+			ovl.RefreshPassPane(false, 0)
 		}
 
 		config.ApplyProviderDefaults(&cfg)

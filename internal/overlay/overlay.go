@@ -24,6 +24,7 @@ void hermesOverlaySetPassBalance(bool active, int pct);
 void hermesOverlaySetBusy(bool on);
 void hermesOverlaySetListening(bool on);
 void hermesOverlaySetTrayCount(int n);
+void hermesOverlayRefreshPassPane(bool active, int pct);
 void hermesOverlaySetAnswerCount(int n);
 void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
@@ -65,6 +66,7 @@ type Overlay interface {
 	SetListening(on bool)
 	SetTrayCount(n int)
 	SetAnswerCount(n int)
+	RefreshPassPane(active bool, pct int)
 	SetStealth(on bool)
 	SetOpacity(pct int)
 	SetResumeProfile(text string)
@@ -192,6 +194,10 @@ func (o *nativeOverlay) SetListening(on bool) {
 
 func (o *nativeOverlay) SetTrayCount(n int) {
 	C.hermesOverlaySetTrayCount(C.int(n))
+}
+
+func (o *nativeOverlay) RefreshPassPane(active bool, pct int) {
+	C.hermesOverlayRefreshPassPane(C.bool(active), C.int(pct))
 }
 
 func (o *nativeOverlay) SetAnswerCount(n int) {
