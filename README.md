@@ -35,7 +35,16 @@ No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
 ### Build from source (recommended)
 
-The recommended way to install Hermes is to build it locally:
+The recommended way to install Hermes is to build it locally.
+
+#### Prerequisites
+
+- Go 1.26.4 or later
+- Xcode 16 or later (the macOS 26 SDK is required for SpeechAnalyzer)
+- Xcode Command Line Tools for `make`, `swiftc`, `codesign`, and `security`
+- A Groq or Cerebras API key
+
+#### Build
 
 ```bash
 git clone https://github.com/Mod5ied/Hermes.git
