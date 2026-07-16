@@ -33,11 +33,37 @@ No embedded browser, no telemetry, no accounts. You bring your own Groq API key.
 
 ## Install
 
-Download `Hermes.app` from the [Releases](../../releases) page.
+### Build from source (recommended)
 
-The first time you run Hermes you will be asked to grant **Screen Recording**, **Accessibility**, and **Speech Recognition** permissions in System Settings. Restart the app after granting them.
+The recommended way to install Hermes is to build it locally:
 
-> **Tip:** If you plan to rebuild often, run `make cert` once before `make bundle`. This creates a self-signed certificate so macOS does not reset your permissions on every rebuild.
+```bash
+git clone https://github.com/Mod5ied/Hermes.git
+cd Hermes
+make cert
+make bundle
+cp -R Hermes.app /Applications/
+```
+
+Then launch `/Applications/Hermes.app` and grant the **Screen Recording**, **Accessibility**, and **Speech Recognition** prompts in System Settings. Restart the app after granting them.
+
+#### Why build from source
+
+macOS only shows the "Apple could not verify" Gatekeeper dialog when a file carries the `com.apple.quarantine` extended attribute. Files built locally with `go build` or `make bundle` are never quarantined, so they never trigger that dialog. The TCC prompts for Screen Recording, Accessibility, and Speech Recognition are unrelated and still appear normally.
+
+### Prebuilt zip (quick try)
+
+If you would rather download a release, grab `Hermes.app.zip` from the [Releases](../../releases) page and run:
+
+```bash
+./install.sh /Applications
+```
+
+The script removes the quarantine flag and re-signs the app locally for your Mac before opening it.
+
+### Known limitation
+
+Without Apple notarization, this fix is per-machine. If you copy or share a built `Hermes.app` to another Mac via AirDrop, Slack, or a shared drive, that Mac will quarantine the fresh copy and you will need to run `install.sh` (or rebuild from source) on that machine too. This is expected for a small developer audience and avoids the paid Developer Program.
 
 ---
 
@@ -51,7 +77,7 @@ The first time you run Hermes you will be asked to grant **Screen Recording**, *
 | `CMD+L` | Start/stop listening to the call |
 | `Esc` | Cancel the countdown or stop typing |
 
-Click the gear icon in the floating bar to open Settings — General, Provider & Model, Pass, Resume, Speech, Hotkeys, and About. Add your API key or a Pass, adjust typing speed and overlay opacity, paste your resume, and check for updates.
+Click the gear icon in the floating bar to open Settings: General, Provider & Model, Pass, Resume, Speech, Hotkeys, and About. Add your API key or a Pass, adjust typing speed and overlay opacity, paste your resume, and check for updates.
 
 ---
 
@@ -65,4 +91,4 @@ Click the gear icon in the floating bar to open Settings — General, Provider &
 
 ## License
 
-MIT License — see [LICENSE](./LICENSE).
+MIT License - see [LICENSE](./LICENSE).
