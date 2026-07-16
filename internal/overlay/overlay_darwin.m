@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <ctype.h>
 #include "_cgo_export.h"
@@ -2000,6 +2001,18 @@ static void markSettingsDirty(void) {
     if (gSaveButton) applySaveButtonState(gSaveButton);
 }
 
+void hermesOverlaySetResumeProfile(const char *text) {
+    if (!text) return;
+    NSString *s = [NSString stringWithUTF8String:text];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gSetResume) {
+            [gSetResume setString:s];
+            if (gLastResume != s) { [gLastResume release]; gLastResume = [s retain]; }
+            markSettingsDirty();
+        }
+    });
+}
+
 static void addSaveButton(NSView *content, CGFloat padX, CGFloat cw, CGFloat *y) {
     HermesSaveButton *save = [[HermesSaveButton alloc] initWithFrame:NSMakeRect(padX, *y - 36, cw - padX * 2, 36)];
     [save setTitle:@"Save"];
@@ -2249,6 +2262,18 @@ static void buildPassPane(void) {
     [card2 addSubview:replaceBtn];
     y -= 44 + 14;
 
+    if (gLastPassActive) {
+        NSView *card3 = addCard(content, padX, cw, y, 44);
+        CGFloat cw3 = card3.bounds.size.width;
+        [card3 addSubview:makeLabel(NSMakeRect(16, 13, 180, 18), @"Deactivate this Pass")];
+        NSButton *removeBtn = makePillButton(@"Remove Pass", 0, @selector(onRemovePass:));
+        removeBtn.frame = NSMakeRect(cw3 - 16 - 92, 11, 92, 22);
+        [removeBtn setContentTintColor:[NSColor systemRedColor]];
+        removeBtn.layer.borderColor = [[NSColor systemRedColor] colorWithAlphaComponent:0.4].CGColor;
+        [card3 addSubview:removeBtn];
+        y -= 44 + 14;
+    }
+
     addSaveButton(content, padX, cw, &y);
 }
 
@@ -2285,6 +2310,14 @@ static void buildResumePane(void) {
     [card addSubview:scroll];
     gSetResume = tv;
     y -= cardH + 14;
+
+    NSView *uploadCard = addCard(content, padX, cw, y, 44);
+    CGFloat cw2 = uploadCard.bounds.size.width;
+    [uploadCard addSubview:makeLabel(NSMakeRect(16, 13, 200, 18), @"Upload PDF or text")];
+    NSButton *uploadBtn = makePillButton(@"Choose file", 0, @selector(onResumeUpload:));
+    uploadBtn.frame = NSMakeRect(cw2 - 16 - 80, 11, 80, 22);
+    [uploadCard addSubview:uploadBtn];
+    y -= 44 + 14;
 
     addSaveButton(content, padX, cw, &y);
 }
@@ -2652,6 +2685,7 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
 - (void)onCopyAnswer:(id)sender;
 - (void)onCodeCardCopy:(id)sender;
 - (void)onSettingsSave:(id)sender;
+- (void)onResumeUpload:(id)sender;
 - (void)onProviderChanged:(id)sender;
 - (void)onModelChanged:(id)sender;
 - (void)onLocaleChanged:(id)sender;
@@ -2688,8 +2722,33 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     hermesOverlayOnType();
 }
 - (void)onTray:(id)sender {
-    // Tray management UI could open here.
+    int count = 0;
+    if (gTrayBadge) {
+        NSString *v = [gTrayBadge stringValue];
+        count = [v intValue];
+    }
+
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Tray"];
+    NSString *title = count > 0
+        ? [NSString stringWithFormat:@"Clear %d screenshot%@", count, count == 1 ? @"" : @"s"]
+        : @"Tray is empty";
+    NSMenuItem *clearItem = [[NSMenuItem alloc] initWithTitle:title
+                                                       action:count > 0 ? @selector(onTrayClear:) : nil
+                                                keyEquivalent:@""];
+    [clearItem setTarget:self];
+    [menu addItem:clearItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Cancel" action:nil keyEquivalent:@""];
+
+    NSRect frame = [(NSButton *)sender frame];
+    NSPoint pt = NSMakePoint(NSMidX(frame), NSMinY(frame));
+    [menu popUpMenuPositioningItem:nil atLocation:pt inView:[(NSButton *)sender superview]];
 }
+
+- (void)onTrayClear:(id)sender {
+    hermesOverlayOnTray();
+}
+
 - (void)onHistoryEnter:(id)sender {
     hermesOverlayOnHistoryEnter();
 }
@@ -2807,6 +2866,37 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     } else {
         [btn setTitle:(btn.tag == 0) ? @"Edit" : @"Replace"];
     }
+}
+
+- (void)onRemovePass:(id)sender {
+    if (!gSettingsWindow) return;
+    if (gLastPassKey) { [gLastPassKey release]; gLastPassKey = [@"" retain]; }
+    gLastPassActive = NO;
+    if (gSetPassKey) {
+        [gSetPassKey setStringValue:@""];
+        [gSetPassKey setEnabled:YES];
+    }
+    markSettingsDirty();
+    [self onSettingsSave:sender];
+}
+
+- (void)onResumeUpload:(id)sender {
+    if (!gSettingsWindow) return;
+
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    [panel setCanChooseFiles:YES];
+    [panel setCanChooseDirectories:NO];
+    [panel setAllowsMultipleSelection:NO];
+    [panel setAllowedContentTypes:@[[UTType typeWithIdentifier:@"public.plain-text"],
+                                    [UTType typeWithIdentifier:@"com.adobe.pdf"]]];
+    [panel setMessage:@"Choose a resume PDF or text file"];
+
+    [panel beginSheetModalForWindow:gSettingsWindow completionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK) return;
+        NSURL *url = [panel URL];
+        if (!url) return;
+        hermesOverlayOnResumeUpload((char *)[[url path] UTF8String]);
+    }];
 }
 
 - (void)onSettingsSave:(id)sender {

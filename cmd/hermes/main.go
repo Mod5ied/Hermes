@@ -18,6 +18,7 @@ import (
 	"github.com/hermes/hermes/internal/pass"
 	"github.com/hermes/hermes/internal/permissions"
 	"github.com/hermes/hermes/internal/ratelimit"
+	"github.com/hermes/hermes/internal/resume"
 	"github.com/hermes/hermes/internal/session"
 	"github.com/hermes/hermes/internal/speech"
 	"github.com/hermes/hermes/internal/tray"
@@ -306,6 +307,17 @@ func run() {
 	ovl.OnSettings(func() {
 		pk, _ := pass.PassKey()
 		overlay.ShowSettings(cfg, pk, pass.Active(), passBalancePct)
+	})
+	ovl.OnTray(func() {
+		tray.Clear()
+		ovl.SetTrayCount(0)
+	})
+	ovl.OnResumeUpload(func(path string) (string, error) {
+		raw, err := resume.ExtractText(path)
+		if err != nil {
+			return "", err
+		}
+		return resume.BuildProfile(raw)
 	})
 	updateVisionUI := func() {
 		vision := config.IsVisionModel(cfg.Provider, cfg.Model)

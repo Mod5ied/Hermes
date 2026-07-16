@@ -13,6 +13,7 @@ void hermesOverlayHide(void);
 void hermesOverlaySetStealth(bool on);
 void hermesOverlaySetOpacity(int pct);
 void hermesOverlaySetInstruction(const char *text);
+void hermesOverlaySetResumeProfile(const char *text);
 char *hermesOverlayGetInstruction(void);
 void hermesOverlayAppendInstruction(const char *text, bool final);
 void hermesOverlayBeginAnswer(void);
@@ -66,12 +67,15 @@ type Overlay interface {
 	SetAnswerCount(n int)
 	SetStealth(on bool)
 	SetOpacity(pct int)
+	SetResumeProfile(text string)
 	OnOpacityChanged(handler func(pct int))
+	OnResumeUpload(handler func(path string) (string, error))
 	OnCapture(handler func())
 	OnSend(handler func())
 	OnNewSession(handler func())
 	OnListenToggle(handler func(on bool))
 	OnSettings(handler func())
+	OnTray(handler func())
 	OnType(handler func())
 	OnTypeReady(handler func())
 	OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
@@ -118,10 +122,12 @@ type nativeOverlay struct {
 	onNewSession   func()
 	onListenToggle func(bool)
 	onSettings     func()
+	onTray         func()
 	onType         func()
 	onTypeReady    func()
 	onSettingsSaved func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
 	onOpacityChanged func(pct int)
+	onResumeUpload func(path string) (string, error)
 	onHistoryEnter func()
 	onHistoryPrev  func()
 	onHistoryNext  func()
@@ -200,6 +206,12 @@ func (o *nativeOverlay) SetOpacity(pct int) {
 	C.hermesOverlaySetOpacity(C.int(pct))
 }
 
+func (o *nativeOverlay) SetResumeProfile(text string) {
+	c := C.CString(text)
+	defer C.free(unsafe.Pointer(c))
+	C.hermesOverlaySetResumeProfile(c)
+}
+
 func (o *nativeOverlay) OnOpacityChanged(handler func(pct int)) {
 	o.onOpacityChanged = handler
 }
@@ -224,6 +236,10 @@ func (o *nativeOverlay) OnSettings(handler func()) {
 	o.onSettings = handler
 }
 
+func (o *nativeOverlay) OnTray(handler func()) {
+	o.onTray = handler
+}
+
 func (o *nativeOverlay) OnType(handler func()) {
 	o.onType = handler
 }
@@ -234,6 +250,11 @@ func (o *nativeOverlay) OnTypeReady(handler func()) {
 
 func (o *nativeOverlay) OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)) {
 	o.onSettingsSaved = handler
+}
+
+// OnResumeUpload registers a handler that extracts text from a resume file.
+func (o *nativeOverlay) OnResumeUpload(handler func(path string) (string, error)) {
+	o.onResumeUpload = handler
 }
 
 func (o *nativeOverlay) OnHistoryEnter(handler func()) {
@@ -376,6 +397,13 @@ func hermesOverlayOnSettings() {
 	}
 }
 
+//export hermesOverlayOnTray
+func hermesOverlayOnTray() {
+	if currentOverlay != nil && currentOverlay.onTray != nil {
+		currentOverlay.onTray()
+	}
+}
+
 //export hermesOverlayOnType
 func hermesOverlayOnType() {
 	if currentOverlay != nil && currentOverlay.onType != nil {
@@ -446,6 +474,19 @@ func hermesOverlayOnSettingsSaved(apiKey *C.char, passKey *C.char, provider *C.c
 func hermesOverlayOnOpacityChanged(pct C.int) {
 	if currentOverlay != nil && currentOverlay.onOpacityChanged != nil {
 		currentOverlay.onOpacityChanged(int(pct))
+	}
+}
+
+//export hermesOverlayOnResumeUpload
+func hermesOverlayOnResumeUpload(path *C.char) {
+	if currentOverlay != nil && currentOverlay.onResumeUpload != nil {
+		goPath := C.GoString(path)
+		profile, err := currentOverlay.onResumeUpload(goPath)
+		if err != nil {
+			currentOverlay.Flash("Couldn't read resume: " + err.Error())
+			return
+		}
+		currentOverlay.SetResumeProfile(profile)
 	}
 }
 
