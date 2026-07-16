@@ -108,6 +108,9 @@ func callActivate(ctx context.Context, workerURL, passKey string) (*Activation, 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("This pass has been revoked.")
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg := readMessage(resp.Body)
 		if msg == "" {

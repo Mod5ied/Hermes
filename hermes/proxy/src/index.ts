@@ -60,7 +60,8 @@ export default {
 
       const stub = stubFor(env, passId);
       const st: PassState = await stub.state();
-      if (!st.exists || st.status === "revoked") return json({ error: "invalid_token" }, 401);
+      if (!st.exists) return json({ error: "invalid_token", message: "Re-activate your pass." }, 401);
+      if (st.status === "revoked") return json({ error: "revoked", message: "This pass has been revoked." }, 403);
       if (st.budgetMicros <= 0) return json({ error: "pass_exhausted", message: "Your Hermes Pass is used up. Top up to continue.", balance_pct: 0 }, 402);
 
       const body = await req.json() as any;

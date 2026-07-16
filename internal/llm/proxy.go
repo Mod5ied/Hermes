@@ -25,9 +25,25 @@ func NewProxy(cfg config.Config, onBalance func(int)) Client {
 }
 
 type proxyClient struct {
-	workerURL string
-	model     string
-	onBalance func(int)
+	workerURL   string
+	model       string
+	onBalance   func(int)
+	tokenGetter func() (string, error)
+	reactivator func(ctx context.Context, workerURL string) (*pass.Activation, error)
+}
+
+func (c *proxyClient) token() (string, error) {
+	if c.tokenGetter != nil {
+		return c.tokenGetter()
+	}
+	return pass.Token()
+}
+
+func (c *proxyClient) reactivate(ctx context.Context) (*pass.Activation, error) {
+	if c.reactivator != nil {
+		return c.reactivator(ctx, c.workerURL)
+	}
+	return pass.Reactivate(ctx, c.workerURL)
 }
 
 func (c *proxyClient) Solve(ctx context.Context, messages []Message, onDelta func(text string)) (Answer, ratelimit.Snapshot, error) {
@@ -37,7 +53,7 @@ func (c *proxyClient) Solve(ctx context.Context, messages []Message, onDelta fun
 		return Answer{}, snap, err
 	}
 
-	token, err := pass.Token()
+	token, err := c.token()
 	if err != nil || token == "" {
 		return Answer{}, snap, fmt.Errorf("Hermes Pass not activated")
 	}
@@ -49,7 +65,7 @@ func (c *proxyClient) Solve(ctx context.Context, messages []Message, onDelta fun
 
 	// 401 => silently re-activate once and retry.
 	if isUnauthorized(err) {
-		act, rerr := pass.Reactivate(ctx, c.workerURL)
+		act, rerr := c.reactivate(ctx)
 		if rerr != nil {
 			return Answer{}, snap, fmt.Errorf("pass reactivation failed: %v", rerr)
 		}
@@ -84,6 +100,9 @@ func (c *proxyClient) solveOnce(ctx context.Context, token string, body []byte, 
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
 		return Answer{}, fmt.Errorf("Pass used up, top up to continue.")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return Answer{}, fmt.Errorf("This pass has been revoked.")
 	}
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
