@@ -67,3 +67,10 @@ deps:
 
 sign-adhoc:
 	codesign --force --deep --sign - $(APP)
+
+# Deploy the Hermes Pass Cloudflare Worker.
+# Requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID env vars (or
+# wrangler configuration) and that Worker secrets are already set via
+# `wrangler secret put`.
+deploy-proxy:
+	cd hermes/proxy && npm ci && npx wrangler deploy
