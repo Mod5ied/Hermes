@@ -1,6 +1,6 @@
 # Hermes (The Fastest & Best One Yet!)
 
-<img width="1340" height="824" alt="image" src="https://github.com/user-attachments/assets/0dada4e4-2a6b-46b1-bfca-706944c7bb76" />
+<img width="872" height="237" alt="image" src="https://github.com/user-attachments/assets/0fd9faf2-b171-4bdb-a154-ea011172a21a" />
 
 
 Hermes is a lightweight macOS assistant for live interviews and meetings (5mb!, yea fuck you Cluely with your 400mb). It captures what is on your screen, listens to the call, and answers questions in a natural, spoken voice, then can type the answer into the focused field for you.
