@@ -46,3 +46,24 @@ func TestEmptyInstructionPlaceholder(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	assert.Equal(t, "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."+VoiceReminder, last.Text)
 }
+
+func TestBuildDocumentTaskUsesDedicatedPromptAndContext(t *testing.T) {
+	th := NewThread(12, 1, "live prompt")
+	msgs := th.BuildDocumentTask(Turn{Instruction: "Score both files"}, `<document name="one.md">source</document>`, true)
+
+	assert.Equal(t, llm.DocumentTaskSystemPrompt(), msgs[0].Text)
+	last := msgs[len(msgs)-1]
+	assert.Equal(t, llm.DocumentMode, last.Mode)
+	assert.Contains(t, last.Text, "<user_directions>\nScore both files\n</user_directions>")
+	assert.Contains(t, last.Text, `<document name="one.md">source</document>`)
+	assert.NotContains(t, last.Text, VoiceReminder)
+}
+
+func TestBuildDocumentTaskSuppliesDefaultDirections(t *testing.T) {
+	th := NewThread(12, 1, "live prompt")
+	msgs := th.BuildDocumentTask(Turn{}, `<document name="one.md">source</document>`, false)
+	last := msgs[len(msgs)-1]
+
+	assert.Contains(t, last.Text, "Review the attached context carefully")
+	assert.Empty(t, last.ImageDataURLs)
+}

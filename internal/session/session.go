@@ -69,28 +69,35 @@ func (t *Thread) SystemPrompt() string {
 // effectivePinsLocked returns the effective pin indices, oldest-first, deduped,
 // capped at 2. Manual pins are preferred over the auto-pin when over the cap.
 func (t *Thread) effectivePinsLocked() []int {
-	var pins []int
-	for _, p := range t.manualPins {
-		if p >= 0 && p < len(t.turns) {
-			pins = append(pins, p)
-		}
-	}
-	if t.autoPin >= 0 && t.autoPin < len(t.turns) {
-		found := false
-		for _, p := range pins {
-			if p == t.autoPin {
-				found = true
-				break
-			}
-		}
-		if !found {
-			pins = append(pins, t.autoPin)
-		}
+	pins := validPins(t.manualPins, len(t.turns))
+	if validPin(t.autoPin, len(t.turns)) && !containsPin(pins, t.autoPin) {
+		pins = append(pins, t.autoPin)
 	}
 	if len(pins) > 2 {
-		pins = pins[:2]
+		return pins[:2]
 	}
 	return pins
+}
+
+func validPins(candidates []int, turnCount int) []int {
+	var pins []int
+	for _, pin := range candidates {
+		if validPin(pin, turnCount) {
+			pins = append(pins, pin)
+		}
+	}
+	return pins
+}
+
+func validPin(pin, turnCount int) bool { return pin >= 0 && pin < turnCount }
+
+func containsPin(pins []int, target int) bool {
+	for _, pin := range pins {
+		if pin == target {
+			return true
+		}
+	}
+	return false
 }
 
 // TogglePin adds or removes a manual pin. It returns the new pinned state and
@@ -103,11 +110,9 @@ func (t *Thread) TogglePin(i int) (pinned bool, ok bool) {
 		return false, false
 	}
 
-	for idx, p := range t.manualPins {
-		if p == i {
-			t.manualPins = append(t.manualPins[:idx], t.manualPins[idx+1:]...)
-			return false, true
-		}
+	if idx := pinIndex(t.manualPins, i); idx >= 0 {
+		t.manualPins = append(t.manualPins[:idx], t.manualPins[idx+1:]...)
+		return false, true
 	}
 
 	if len(t.effectivePinsLocked()) >= 2 {
@@ -115,6 +120,15 @@ func (t *Thread) TogglePin(i int) (pinned bool, ok bool) {
 	}
 	t.manualPins = append(t.manualPins, i)
 	return true, true
+}
+
+func pinIndex(pins []int, target int) int {
+	for idx, pin := range pins {
+		if pin == target {
+			return idx
+		}
+	}
+	return -1
 }
 
 // SetAutoPin records the most recent CODE-answer turn. Pass -1 to clear.
@@ -146,84 +160,120 @@ func (t *Thread) PinnedCount() int {
 // Build creates the message list for the current turn, including trimmed history.
 // If vision is false, all image attachments are dropped.
 func (t *Thread) Build(current Turn, vision bool) []llm.Message {
+	return t.build(current, vision, "", false)
+}
+
+// BuildDocumentTask creates an accuracy-oriented request using a dedicated
+// system prompt and the supplied document block. It intentionally omits the
+// short spoken-voice reminder used by live interview mode.
+func (t *Thread) BuildDocumentTask(current Turn, documents string, vision bool) []llm.Message {
+	return t.build(current, vision, documents, true)
+}
+
+func (t *Thread) build(current Turn, vision bool, documents string, documentMode bool) []llm.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	pins := t.effectivePinsLocked()
-	pinSet := make(map[int]bool, len(pins))
-	for _, p := range pins {
-		pinSet[p] = true
-	}
+	msgs := []llm.Message{t.systemMessage(pins, documentMode)}
+	msgs = append(msgs, t.historyMessages(pins)...)
+	return append(msgs, t.currentMessage(current, documents, vision, documentMode))
+}
 
-	// System message, with the pinned REFERENCE appended.
-	systemContent := t.systemPrompt
+func (t *Thread) systemMessage(pins []int, documentMode bool) llm.Message {
+	content := t.systemPrompt
+	if documentMode {
+		content = llm.DocumentTaskSystemPrompt()
+	}
 	if len(pins) > 0 {
-		systemContent += "\n\n" + buildReferenceBlock(t.turns, pins)
+		content += "\n\n" + buildReferenceBlock(t.turns, pins)
 	}
-	msgs := []llm.Message{{Role: "system", Text: systemContent}}
+	return llm.Message{Role: "system", Text: content}
+}
 
-	// Recency window: last maxTurns turns, skipping any pinned index.
-	start := 0
-	if len(t.turns) > t.maxTurns {
-		start = len(t.turns) - t.maxTurns
+func (t *Thread) historyMessages(pins []int) []llm.Message {
+	pinSet := make(map[int]bool, len(pins))
+	for _, pin := range pins {
+		pinSet[pin] = true
 	}
+	start := max(0, len(t.turns)-t.maxTurns)
+	var messages []llm.Message
 	for i := start; i < len(t.turns); i++ {
-		if pinSet[i] {
-			continue
-		}
-		turn := t.turns[i]
-		userText := turn.Instruction
-		if userText == "" {
-			userText = "screenshot attached"
-		}
-		msgs = append(msgs,
-			llm.Message{Role: "user", Text: userText},
-			llm.Message{Role: "assistant", Text: turn.Answer},
-		)
-	}
-
-	// Current turn: include the image window of most recent screenshots.
-	var images []string
-	if vision {
-		if t.imageWindow > 0 && len(t.turns) > 0 {
-			window := []string{}
-			for i := len(t.turns) - 1; i >= 0 && len(window) < t.imageWindow-1; i-- {
-				for j := len(t.turns[i].ImageDataURLs) - 1; j >= 0 && len(window) < t.imageWindow-1; j-- {
-					window = append([]string{t.turns[i].ImageDataURLs[j]}, window...)
-				}
-			}
-			images = append(window, current.ImageDataURLs...)
-			if len(images) > t.imageWindow {
-				images = images[len(images)-t.imageWindow:]
-			}
-		} else {
-			images = current.ImageDataURLs
-		}
-		if len(images) > 5 {
-			images = images[len(images)-5:]
+		if !pinSet[i] {
+			messages = append(messages, messagesForTurn(t.turns[i])...)
 		}
 	}
+	return messages
+}
 
-	currentText := current.Instruction
-	if currentText == "" {
-		if len(current.ImageDataURLs) > 0 {
-			currentText = "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."
-		} else {
-			currentText = "screenshot attached"
-		}
+func messagesForTurn(turn Turn) []llm.Message {
+	userText := turn.Instruction
+	if userText == "" {
+		userText = "screenshot attached"
 	}
+	return []llm.Message{
+		{Role: "user", Text: userText},
+		{Role: "assistant", Text: turn.Answer},
+	}
+}
 
-	// Close reminder so the model obeys the spoken-voice rules on this turn,
-	// even when the long system prompt is competing with the question.
-	currentText += VoiceReminder
+func (t *Thread) currentMessage(current Turn, documents string, vision, documentMode bool) llm.Message {
+	if documentMode {
+		return documentMessage(current, documents, t.recentImages(current, vision))
+	}
+	return realtimeMessage(current, t.recentImages(current, vision))
+}
 
-	msgs = append(msgs, llm.Message{
-		Role:          "user",
-		Text:          currentText,
-		ImageDataURLs: images,
-	})
+func documentMessage(current Turn, documents string, images []string) llm.Message {
+	directions := current.Instruction
+	if strings.TrimSpace(directions) == "" {
+		directions = "Review the attached context carefully and return the most useful accurate result."
+	}
+	text := "<user_directions>\n" + directions + "\n</user_directions>\n\n<attached_context>\n" + documents + "</attached_context>"
+	return llm.Message{Role: "user", Text: text, ImageDataURLs: images, Mode: llm.DocumentMode}
+}
 
-	return msgs
+func realtimeMessage(current Turn, images []string) llm.Message {
+	text := current.Instruction
+	if text == "" && len(current.ImageDataURLs) > 0 {
+		text = "Answer every question visible in the screenshot. Treat each numbered question as a short SENTENCE explanation; do not select a single option."
+	}
+	if text == "" {
+		text = "screenshot attached"
+	}
+	return llm.Message{Role: "user", Text: text + VoiceReminder, ImageDataURLs: images, Mode: llm.RealtimeMode}
+}
+
+func (t *Thread) recentImages(current Turn, vision bool) []string {
+	if !vision {
+		return nil
+	}
+	images := append(t.previousImages(), current.ImageDataURLs...)
+	if len(images) > t.imageWindow && t.imageWindow > 0 {
+		images = images[len(images)-t.imageWindow:]
+	}
+	if len(images) > 5 {
+		images = images[len(images)-5:]
+	}
+	return images
+}
+
+func (t *Thread) previousImages() []string {
+	if t.imageWindow <= 0 || len(t.turns) == 0 {
+		return nil
+	}
+	window := []string{}
+	for i := len(t.turns) - 1; i >= 0 && len(window) < t.imageWindow-1; i-- {
+		window = prependRecent(window, t.turns[i].ImageDataURLs, t.imageWindow-1)
+	}
+	return window
+}
+
+func prependRecent(window, candidates []string, limit int) []string {
+	for j := len(candidates) - 1; j >= 0 && len(window) < limit; j-- {
+		window = append([]string{candidates[j]}, window...)
+	}
+	return window
 }
 
 func buildReferenceBlock(turns []Turn, pins []int) string {

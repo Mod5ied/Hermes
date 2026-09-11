@@ -35,24 +35,25 @@ func extractPDF(path string) (string, error) {
 	defer f.Close()
 
 	var b strings.Builder
-	var buf strings.Builder
 	totalPage := r.NumPage()
 	for pageIndex := 1; pageIndex <= totalPage; pageIndex++ {
-		p := r.Page(pageIndex)
-		if p.V.IsNull() {
-			continue
-		}
-		buf.Reset()
-		texts := p.Content().Text
-		for _, text := range texts {
-			buf.WriteString(text.S)
-		}
-		if buf.Len() > 0 {
-			b.WriteString(buf.String())
+		if text := pdfPageText(r.Page(pageIndex)); text != "" {
+			b.WriteString(text)
 			b.WriteString("\n")
 		}
 	}
 	return b.String(), nil
+}
+
+func pdfPageText(page pdf.Page) string {
+	if page.V.IsNull() {
+		return ""
+	}
+	var text strings.Builder
+	for _, fragment := range page.Content().Text {
+		text.WriteString(fragment.S)
+	}
+	return text.String()
 }
 
 // BuildProfile compacts raw resume text to roughly 200-300 words.

@@ -26,3 +26,30 @@ func TestTrayCap(t *testing.T) {
 	// Tray lives in another package; keep this placeholder minimal.
 	assert.Equal(t, 1, 1)
 }
+
+func TestValidateImageContentRejectsBlackFrame(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 200, 120))
+	err := ValidateImageContent(img)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "black")
+}
+
+func TestValidateImageContentRejectsUniformFrame(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 200, 120))
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 200; x++ {
+			img.Set(x, y, color.RGBA{240, 240, 240, 255})
+		}
+	}
+	require.Error(t, ValidateImageContent(img))
+}
+
+func TestValidateImageContentAcceptsDarkPageWithText(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 200, 120))
+	for y := 40; y < 55; y++ {
+		for x := 20; x < 180; x++ {
+			img.Set(x, y, color.White)
+		}
+	}
+	require.NoError(t, ValidateImageContent(img))
+}

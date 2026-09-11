@@ -2,6 +2,7 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
+#import <stdio.h>
 
 static NSString *HermesBundleID = @"com.hermes.app";
 
@@ -9,16 +10,12 @@ static NSString *HermesBundleID = @"com.hermes.app";
 @end
 
 @implementation HermesRegionWindow
-- (BOOL)canBecomeKeyWindow {
-    return YES;
-}
+- (BOOL)canBecomeKeyWindow { return YES; }
 @end
 
 double hermes_backing_scale(void) {
     NSScreen *screen = [NSScreen mainScreen];
-    if (screen) {
-        return (double)[screen backingScaleFactor];
-    }
+    if (screen) return (double)[screen backingScaleFactor];
     return 1.0;
 }
 
@@ -43,8 +40,7 @@ double hermes_backing_scale(void) {
     return self;
 }
 
-- (void)run {
-    NSRect frame = [[NSScreen mainScreen] frame];
+- (HermesRegionWindow *)createWindow:(NSRect)frame {
     HermesRegionWindow *window = [[HermesRegionWindow alloc] initWithContentRect:frame
                                                                        styleMask:NSWindowStyleMaskBorderless
                                                                          backing:NSBackingStoreBuffered
@@ -60,36 +56,67 @@ double hermes_backing_scale(void) {
     [window setDelegate:self];
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    self.window = window;
+    return window;
+}
 
+- (void)createOverlay {
     self.overlay = [[NSBox alloc] initWithFrame:NSZeroRect];
     [self.overlay setBoxType:NSBoxCustom];
     [self.overlay setFillColor:[NSColor colorWithCalibratedWhite:1.0 alpha:0.25]];
     [self.overlay setBorderColor:[NSColor whiteColor]];
     [self.overlay setBorderWidth:1.0];
     [self.overlay setTransparent:NO];
-    [[window contentView] addSubview:self.overlay];
+    [[self.window contentView] addSubview:self.overlay];
+}
 
-    // Show the seed selection, if any, so the user can adjust the previous area.
-    if (NSWidth(self.selection) > 0 && NSHeight(self.selection) > 0) {
-        [self.overlay setFrame:self.selection];
-        [self.overlay setNeedsDisplay:YES];
-    }
+- (void)showSeedSelection {
+    if (NSWidth(self.selection) <= 0 || NSHeight(self.selection) <= 0) return;
+    [self.overlay setFrame:self.selection];
+    [self.overlay setNeedsDisplay:YES];
+}
 
+- (NSEvent *)nextSelectionEvent {
     NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDown |
                        NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp |
                        NSEventMaskKeyDown;
-    NSEvent *event;
-    while (!self.done && (event = [NSApp nextEventMatchingMask:mask
-                                                     untilDate:[NSDate distantFuture]
-                                                        inMode:NSEventTrackingRunLoopMode
-                                                       dequeue:YES])) {
+    return [NSApp nextEventMatchingMask:mask
+                              untilDate:[NSDate distantFuture]
+                                 inMode:NSEventTrackingRunLoopMode
+                                dequeue:YES];
+}
+
+- (void)processEvents {
+    while (!self.done) {
+        NSEvent *event = [self nextSelectionEvent];
+        if (!event) break;
         [self handleEvent:event];
-        if (!self.done) {
-            [NSApp sendEvent:event];
-        }
+        if (!self.done) [NSApp sendEvent:event];
     }
+}
+
+- (void)run {
+    self.window = [self createWindow:[[NSScreen mainScreen] frame]];
+    [self createOverlay];
+    [self showSeedSelection];
+    [self processEvents];
     [self.window orderOut:nil];
+}
+
+- (void)updateDraggedSelection:(NSEvent *)event {
+    NSPoint point = [event locationInWindow];
+    CGFloat x = MIN(self.start.x, point.x);
+    CGFloat y = MIN(self.start.y, point.y);
+    CGFloat width = fabs(point.x - self.start.x);
+    CGFloat height = fabs(point.y - self.start.y);
+    self.selection = NSMakeRect(x, y, width, height);
+    [self.overlay setFrame:self.selection];
+    [self.overlay setNeedsDisplay:YES];
+}
+
+- (void)handleKeyEvent:(NSEvent *)event {
+    if ([event keyCode] != 53) return;
+    self.cancelled = YES;
+    self.done = YES;
 }
 
 - (void)handleEvent:(NSEvent *)event {
@@ -98,34 +125,21 @@ double hermes_backing_scale(void) {
             self.start = [event locationInWindow];
             self.selection = NSMakeRect(self.start.x, self.start.y, 0, 0);
             break;
-        case NSEventTypeLeftMouseDragged: {
-            NSPoint p = [event locationInWindow];
-            CGFloat x = MIN(self.start.x, p.x);
-            CGFloat y = MIN(self.start.y, p.y);
-            CGFloat w = fabs(p.x - self.start.x);
-            CGFloat h = fabs(p.y - self.start.y);
-            self.selection = NSMakeRect(x, y, w, h);
-            [self.overlay setFrame:self.selection];
-            [self.overlay setNeedsDisplay:YES];
+        case NSEventTypeLeftMouseDragged:
+            [self updateDraggedSelection:event];
             break;
-        }
         case NSEventTypeLeftMouseUp:
             self.done = YES;
             break;
         case NSEventTypeKeyDown:
-            if ([event keyCode] == 53) { // ESC
-                self.cancelled = YES;
-                self.done = YES;
-            }
+            [self handleKeyEvent:event];
             break;
         default:
             break;
     }
 }
 
-- (void)windowWillClose:(NSNotification *)notification {
-    self.done = YES;
-}
+- (void)windowWillClose:(NSNotification *)notification { self.done = YES; }
 
 @end
 
@@ -133,246 +147,349 @@ void hermes_select_region(int seedX, int seedY, int seedW, int seedH,
                           int *outX, int *outY, int *outW, int *outH) {
     NSRect seed = NSMakeRect((CGFloat)seedX, (CGFloat)seedY, (CGFloat)seedW, (CGFloat)seedH);
     __block int bx = 0, by = 0, bw = 0, bh = 0;
-
-    // The selector creates AppKit windows and pumps events, so it must run on
-    // the main thread while the calling goroutine waits for the result.
     dispatch_sync(dispatch_get_main_queue(), ^{
         HermesRegionSelector *selector = [[HermesRegionSelector alloc] initWithSeed:seed];
         [selector run];
-
         if (!selector.cancelled && selector.selection.size.width >= 2 && selector.selection.size.height >= 2) {
-            NSRect r = selector.selection;
-            bx = (int)round(NSMinX(r));
-            by = (int)round(NSMinY(r));
-            bw = (int)round(NSWidth(r));
-            bh = (int)round(NSHeight(r));
+            NSRect rect = selector.selection;
+            bx = (int)round(NSMinX(rect));
+            by = (int)round(NSMinY(rect));
+            bw = (int)round(NSWidth(rect));
+            bh = (int)round(NSHeight(rect));
         }
     });
-
-    *outX = bx; *outY = by; *outW = bw; *outH = bh;
+    *outX = bx;
+    *outY = by;
+    *outW = bw;
+    *outH = bh;
 }
 
-// Helper: find the display containing the rect. Falls back to main display.
 static CGDirectDisplayID displayForRect(int x, int y, int w, int h) {
     CGRect target = CGRectMake((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
     uint32_t count = 0;
     CGDirectDisplayID displays[8];
     if (CGGetActiveDisplayList(8, displays, &count) == kCGErrorSuccess) {
         for (uint32_t i = 0; i < count; i++) {
-            CGRect bounds = CGDisplayBounds(displays[i]);
-            if (CGRectIntersectsRect(bounds, target)) {
-                return displays[i];
-            }
+            if (CGRectIntersectsRect(CGDisplayBounds(displays[i]), target)) return displays[i];
         }
     }
     return CGMainDisplayID();
 }
 
-int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outLen) {
-    if (w <= 0 || h <= 0) return -1;
+static CGFloat physicalDisplayScale(CGDirectDisplayID display) {
+    CGFloat physicalWidth = CGDisplayScreenSize(display).width;
+    if (physicalWidth <= 0) return 1.0;
+    return (CGFloat)CGDisplayPixelsWide(display) / CGDisplayBounds(display).size.width;
+}
 
-    __block int result = -1;
-    __block NSData *pngData = nil;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGDirectDisplayID displayID = displayForRect(x, y, w, h);
-        CGFloat scale = 1.0;
-        uint32_t count = 0;
-        CGDirectDisplayID displays[8];
-        if (CGGetActiveDisplayList(8, displays, &count) == kCGErrorSuccess) {
-            for (uint32_t i = 0; i < count; i++) {
-                if (displays[i] == displayID) {
-                    scale = CGDisplayScreenSize(displays[i]).width > 0 ?
-                            (CGFloat)CGDisplayPixelsWide(displays[i]) / CGDisplayBounds(displays[i]).size.width : 1.0;
-                    break;
-                }
-            }
-        }
-        if (scale <= 0) scale = 1.0;
-
-        // Stored pixels use a bottom-left origin (AppKit), but SCK sourceRect
-        // expects a top-left origin. Flip y and clamp to the display.
-        CGRect displayBounds = CGDisplayBounds(displayID);
-        CGFloat displayW = displayBounds.size.width;
-        CGFloat displayH = displayBounds.size.height;
-        CGFloat px = (CGFloat)x / scale;
-        CGFloat py = (CGFloat)y / scale;
-        CGFloat pw = (CGFloat)w / scale;
-        CGFloat ph = (CGFloat)h / scale;
-        CGFloat sourceY = displayH - py - ph;
-        if (px < 0) px = 0;
-        if (sourceY < 0) sourceY = 0;
-        if (pw > displayW) pw = displayW;
-        if (ph > displayH) ph = displayH;
-        if (px + pw > displayW) pw = displayW - px;
-        if (sourceY + ph > displayH) ph = displayH - sourceY;
-        CGRect targetPoints = CGRectMake(px, sourceY, pw, ph);
-
-        [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
-            if (error) {
-                result = -2;
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            // Find the SCDisplay matching our target display.
-            SCDisplay *targetDisplay = content.displays.firstObject;
-            for (SCDisplay *d in content.displays) {
-                if ((CGDirectDisplayID)d.displayID == displayID) {
-                    targetDisplay = d;
-                    break;
-                }
-            }
-
-            SCRunningApplication *exclude = nil;
-            for (SCRunningApplication *app in content.applications) {
-                if ([app.bundleIdentifier isEqualToString:HermesBundleID]) {
-                    exclude = app;
-                    break;
-                }
-            }
-
-            SCContentFilter *filter;
-            if (exclude) {
-                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay
-                                                excludingApplications:@[exclude]
-                                                     exceptingWindows:@[]];
-            } else {
-                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay
-                                                   excludingWindows:@[]];
-            }
-
-            SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
-            cfg.sourceRect = targetPoints;
-            cfg.capturesAudio = NO;
-            cfg.showsCursor = NO;
-
-            [SCScreenshotManager captureImageWithFilter:filter
-                                          configuration:cfg
-                                      completionHandler:^(CGImageRef img, NSError *error2) {
-                if (error2 || !img) {
-                    result = -3;
-                    dispatch_semaphore_signal(sem);
-                    return;
-                }
-
-                NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
-                pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
-                                            properties:@{}];
-                if (!pngData || pngData.length == 0) {
-                    result = -4;
-                } else {
-                    result = 0;
-                }
-                dispatch_semaphore_signal(sem);
-            }];
-        }];
-    });
-
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-
-    if (result != 0 || !pngData) {
-        return result;
+static CGFloat scaleFromDisplayList(CGDirectDisplayID target, CGDirectDisplayID *displays, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (displays[i] == target) return physicalDisplayScale(displays[i]);
     }
+    return 1.0;
+}
 
-    size_t len = pngData.length;
-    void *buf = malloc(len);
-    if (!buf) return -5;
-    memcpy(buf, pngData.bytes, len);
-    *outData = buf;
-    *outLen = len;
+static CGFloat displayScale(CGDirectDisplayID display) {
+    uint32_t count = 0;
+    CGDirectDisplayID displays[8];
+    if (CGGetActiveDisplayList(8, displays, &count) != kCGErrorSuccess) return 1.0;
+    return scaleFromDisplayList(display, displays, count);
+}
+
+static CGFloat positiveScale(CGFloat scale) {
+    if (scale <= 0) return 1.0;
+    return scale;
+}
+
+static CGRect captureSourceRect(CGDirectDisplayID display, CGFloat scale, int x, int y, int w, int h) {
+    CGRect bounds = CGDisplayBounds(display);
+    CGFloat displayWidth = bounds.size.width;
+    CGFloat displayHeight = bounds.size.height;
+    CGFloat px = fmax(0, (CGFloat)x / scale);
+    CGFloat ph = fmin(displayHeight, (CGFloat)h / scale);
+    CGFloat sourceY = fmax(0, displayHeight - (CGFloat)y / scale - ph);
+    CGFloat pw = fmin(displayWidth, (CGFloat)w / scale);
+    pw = fmin(pw, displayWidth - px);
+    ph = fmin(ph, displayHeight - sourceY);
+    return CGRectMake(px, sourceY, pw, ph);
+}
+
+static SCDisplay *matchingDisplay(SCShareableContent *content, CGDirectDisplayID displayID) {
+    SCDisplay *target = content.displays.firstObject;
+    for (SCDisplay *display in content.displays) {
+        if ((CGDirectDisplayID)display.displayID == displayID) return display;
+    }
+    return target;
+}
+
+static SCRunningApplication *hermesApplication(SCShareableContent *content) {
+    for (SCRunningApplication *application in content.applications) {
+        if ([application.bundleIdentifier isEqualToString:HermesBundleID]) return application;
+    }
+    return nil;
+}
+
+static SCContentFilter *displayFilter(SCDisplay *display, SCRunningApplication *excluded) {
+    if (excluded) {
+        return [[SCContentFilter alloc] initWithDisplay:display
+                                  excludingApplications:@[excluded]
+                                       exceptingWindows:@[]];
+    }
+    return [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+}
+
+static NSData *pngDataForImage(CGImageRef image) {
+    NSBitmapImageRep *representation = [[NSBitmapImageRep alloc] initWithCGImage:image];
+    return [representation representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+
+static int copyPNGData(NSData *data, int result, void **outData, size_t *outLen, int allocationCode) {
+    if (result != 0 || !data) return result;
+    size_t length = data.length;
+    void *buffer = malloc(length);
+    if (!buffer) return allocationCode;
+    memcpy(buffer, data.bytes, length);
+    *outData = buffer;
+    *outLen = length;
     return 0;
 }
 
+@interface HermesRectCapture : NSObject
+@property (nonatomic, assign) CGDirectDisplayID displayID;
+@property (nonatomic, assign) CGRect sourceRect;
+@property (nonatomic, assign) int result;
+@property (nonatomic, strong) NSData *pngData;
+@property (nonatomic, strong) dispatch_semaphore_t semaphore;
+- (instancetype)initWithX:(int)x y:(int)y width:(int)width height:(int)height;
+- (void)begin;
+@end
+
+@implementation HermesRectCapture
+
+- (instancetype)initWithX:(int)x y:(int)y width:(int)width height:(int)height {
+    self = [super init];
+    if (self) {
+        _displayID = displayForRect(x, y, width, height);
+        CGFloat scale = positiveScale(displayScale(_displayID));
+        _sourceRect = captureSourceRect(_displayID, scale, x, y, width, height);
+        _result = -1;
+        _semaphore = dispatch_semaphore_create(0);
+    }
+    return self;
+}
+
+- (void)finish:(int)result {
+    self.result = result;
+    dispatch_semaphore_signal(self.semaphore);
+}
+
+- (void)captureFinished:(CGImageRef)image error:(NSError *)error {
+    if (error || !image) {
+        [self finish:-3];
+        return;
+    }
+    self.pngData = pngDataForImage(image);
+    if (!self.pngData || self.pngData.length == 0) {
+        [self finish:-4];
+        return;
+    }
+    [self finish:0];
+}
+
+- (void)contentReady:(SCShareableContent *)content error:(NSError *)error {
+    if (error) {
+        [self finish:-2];
+        return;
+    }
+    SCDisplay *display = matchingDisplay(content, self.displayID);
+    SCContentFilter *filter = displayFilter(display, hermesApplication(content));
+    SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+    configuration.sourceRect = self.sourceRect;
+    CGFloat scale = positiveScale(displayScale(self.displayID));
+    configuration.width = (NSInteger)round(CGRectGetWidth(self.sourceRect) * scale);
+    configuration.height = (NSInteger)round(CGRectGetHeight(self.sourceRect) * scale);
+    configuration.capturesAudio = NO;
+    configuration.showsCursor = NO;
+    [SCScreenshotManager captureImageWithFilter:filter configuration:configuration
+                              completionHandler:^(CGImageRef image, NSError *captureError) {
+        [self captureFinished:image error:captureError];
+    }];
+}
+
+- (void)begin {
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
+        [self contentReady:content error:error];
+    }];
+}
+
+@end
+
+int hermes_capture_rect(int x, int y, int w, int h, void **outData, size_t *outLen) {
+    if (w <= 0 || h <= 0) return -1;
+    HermesRectCapture *capture = [[HermesRectCapture alloc] initWithX:x y:y width:w height:h];
+    dispatch_async(dispatch_get_main_queue(), ^{ [capture begin]; });
+    dispatch_semaphore_wait(capture.semaphore, DISPATCH_TIME_FOREVER);
+    return copyPNGData(capture.pngData, capture.result, outData, outLen, -5);
+}
+
+static BOOL hasWindowFields(CFNumberRef owner, CFNumberRef layer, CFNumberRef windowID, CFDictionaryRef bounds) {
+    return owner && layer && windowID && bounds;
+}
+
+static BOOL belongsToFrontApplication(int ownerPID, int frontPID, int ourPID, int layer) {
+    return ownerPID == frontPID && ownerPID != ourPID && layer == 0;
+}
+
+static CGWindowID candidateWindowID(CFDictionaryRef info, int frontPID, int ourPID) {
+    CFNumberRef ownerValue = CFDictionaryGetValue(info, kCGWindowOwnerPID);
+    CFNumberRef layerValue = CFDictionaryGetValue(info, kCGWindowLayer);
+    CFNumberRef idValue = CFDictionaryGetValue(info, kCGWindowNumber);
+    CFDictionaryRef boundsValue = CFDictionaryGetValue(info, kCGWindowBounds);
+    if (!hasWindowFields(ownerValue, layerValue, idValue, boundsValue)) return kCGNullWindowID;
+    int ownerPID = 0, layer = 0, windowID = 0;
+    CGRect bounds = CGRectZero;
+    CFNumberGetValue(ownerValue, kCFNumberIntType, &ownerPID);
+    CFNumberGetValue(layerValue, kCFNumberIntType, &layer);
+    CFNumberGetValue(idValue, kCFNumberIntType, &windowID);
+    if (!CGRectMakeWithDictionaryRepresentation(boundsValue, &bounds)) return kCGNullWindowID;
+    if (!belongsToFrontApplication(ownerPID, frontPID, ourPID, layer)) return kCGNullWindowID;
+    if (bounds.size.width * bounds.size.height < 10000.0) return kCGNullWindowID;
+    return (CGWindowID)windowID;
+}
+
+static CGWindowID frontWindowID(int frontPID, int ourPID) {
+    CFArrayRef windowInfo = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!windowInfo) return kCGNullWindowID;
+    CGWindowID target = kCGNullWindowID;
+    CFIndex count = CFArrayGetCount(windowInfo);
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(windowInfo, i);
+        target = candidateWindowID(info, frontPID, ourPID);
+        if (target != kCGNullWindowID) break;
+    }
+    CFRelease(windowInfo);
+    return target;
+}
+
+static SCWindow *matchingWindow(SCShareableContent *content, CGWindowID targetWindowID) {
+    for (SCWindow *window in content.windows) {
+        if ((CGWindowID)window.windowID == targetWindowID) return window;
+    }
+    return nil;
+}
+
+static const char *errorDomain(NSError *error) {
+    if (!error) return "unknown";
+    return error.domain.UTF8String;
+}
+
+static SCStreamConfiguration *frontWindowConfiguration(SCContentFilter *filter, SCWindow *window) {
+    SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+    CGFloat scale = positiveScale(filter.pointPixelScale);
+    configuration.width = (NSInteger)round(NSWidth(window.frame) * scale);
+    configuration.height = (NSInteger)round(NSHeight(window.frame) * scale);
+    configuration.ignoreShadowsSingleWindow = YES;
+    configuration.showsCursor = NO;
+    configuration.capturesAudio = NO;
+    return configuration;
+}
+
+@interface HermesFrontWindowCapture : NSObject
+@property (nonatomic, assign) pid_t frontPID;
+@property (nonatomic, assign) CGWindowID windowID;
+@property (nonatomic, assign) int result;
+@property (nonatomic, strong) NSData *pngData;
+@property (nonatomic, strong) dispatch_semaphore_t semaphore;
+- (void)begin;
+@end
+
+@implementation HermesFrontWindowCapture
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _result = -1;
+        _semaphore = dispatch_semaphore_create(0);
+    }
+    return self;
+}
+
+- (void)finish:(int)result {
+    self.result = result;
+    dispatch_semaphore_signal(self.semaphore);
+}
+
+- (void)captureFinished:(CGImageRef)image error:(NSError *)error {
+    if (error || !image) {
+        fprintf(stderr, "Hermes capture: screenshot error domain=%s code=%ld\n",
+                errorDomain(error), (long)error.code);
+        [self finish:-3];
+        return;
+    }
+    self.pngData = pngDataForImage(image);
+    if (!self.pngData || self.pngData.length == 0) {
+        [self finish:-4];
+        return;
+    }
+    [self finish:0];
+}
+
+- (void)captureWindow:(SCWindow *)window {
+    SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:window];
+    SCStreamConfiguration *configuration = frontWindowConfiguration(filter, window);
+    fprintf(stderr,
+            "Hermes capture: target pid=%d window=%u points=%.0fx%.0f scale=%.2f output=%ldx%ld\n",
+            self.frontPID, (unsigned int)self.windowID, NSWidth(window.frame), NSHeight(window.frame),
+            positiveScale(filter.pointPixelScale), (long)configuration.width, (long)configuration.height);
+    [SCScreenshotManager captureImageWithFilter:filter configuration:configuration
+                              completionHandler:^(CGImageRef image, NSError *error) {
+        [self captureFinished:image error:error];
+    }];
+}
+
+- (void)contentReady:(SCShareableContent *)content error:(NSError *)error {
+    if (error || !content) {
+        fprintf(stderr, "Hermes capture: shareable content error domain=%s code=%ld\n",
+                errorDomain(error), (long)error.code);
+        [self finish:-2];
+        return;
+    }
+    SCWindow *window = matchingWindow(content, self.windowID);
+    if (!window) {
+        fprintf(stderr, "Hermes capture: selected window %u is no longer shareable\n",
+                (unsigned int)self.windowID);
+        [self finish:-5];
+        return;
+    }
+    [self captureWindow:window];
+}
+
+- (void)begin {
+    pid_t ourPID = [[NSProcessInfo processInfo] processIdentifier];
+    NSRunningApplication *frontApplication = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    self.frontPID = frontApplication ? frontApplication.processIdentifier : 0;
+    self.windowID = frontWindowID(self.frontPID, ourPID);
+    if (self.windowID == kCGNullWindowID) {
+        fprintf(stderr, "Hermes capture: no front window for pid=%d\n", self.frontPID);
+        [self finish:-5];
+        return;
+    }
+    [SCShareableContent getShareableContentExcludingDesktopWindows:YES
+                                                onScreenWindowsOnly:YES
+                                                 completionHandler:^(SCShareableContent *content, NSError *error) {
+        [self contentReady:content error:error];
+    }];
+}
+
+@end
+
 int hermes_capture_front_window(void **outData, size_t *outLen) {
     if (!outData || !outLen) return -1;
-    __block int result = -1;
-    __block NSData *pngData = nil;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
-            if (error || !content) {
-                result = -2;
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            SCWindow *target = nil;
-            pid_t ourPID = [[NSProcessInfo processInfo] processIdentifier];
-            for (SCWindow *w in content.windows) {
-                if (!w.isOnScreen) continue;
-                if (w.windowLayer != 0) continue;
-                SCRunningApplication *app = w.owningApplication;
-                if (!app) continue;
-                if ([app.bundleIdentifier isEqualToString:HermesBundleID]) continue;
-                if (app.processID == ourPID) continue;
-                CGFloat area = NSWidth(w.frame) * NSHeight(w.frame);
-                if (area < 10000.0) continue;
-                target = w;
-                break;
-            }
-            if (!target) {
-                result = -5;
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:target];
-            SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
-
-            // Determine the backing scale for the display that contains this window.
-            CGFloat scale = 1.0;
-            uint32_t displayCount = 0;
-            CGDirectDisplayID displays[8];
-            if (CGGetActiveDisplayList(8, displays, &displayCount) == kCGErrorSuccess) {
-                CGPoint center = CGPointMake(CGRectGetMidX(target.frame), CGRectGetMidY(target.frame));
-                for (uint32_t i = 0; i < displayCount; i++) {
-                    CGRect bounds = CGDisplayBounds(displays[i]);
-                    if (CGRectContainsPoint(bounds, center) && bounds.size.width > 0) {
-                        scale = (CGFloat)CGDisplayPixelsWide(displays[i]) / bounds.size.width;
-                        break;
-                    }
-                }
-            }
-            cfg.width = (NSInteger)round(NSWidth(target.frame) * scale);
-            cfg.height = (NSInteger)round(NSHeight(target.frame) * scale);
-            cfg.showsCursor = NO;
-            cfg.capturesAudio = NO;
-
-            [SCScreenshotManager captureImageWithFilter:filter
-                                          configuration:cfg
-                                      completionHandler:^(CGImageRef img, NSError *error2) {
-                if (error2 || !img) {
-                    result = -3;
-                    dispatch_semaphore_signal(sem);
-                    return;
-                }
-                NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
-                pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
-                                            properties:@{}];
-                if (!pngData || pngData.length == 0) {
-                    result = -4;
-                } else {
-                    result = 0;
-                }
-                dispatch_semaphore_signal(sem);
-            }];
-        }];
-    });
-
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-
-    if (result != 0 || !pngData) {
-        return result;
-    }
-
-    size_t len = pngData.length;
-    void *buf = malloc(len);
-    if (!buf) return -6;
-    memcpy(buf, pngData.bytes, len);
-    *outData = buf;
-    *outLen = len;
-    return 0;
+    *outData = NULL;
+    *outLen = 0;
+    HermesFrontWindowCapture *capture = [[HermesFrontWindowCapture alloc] init];
+    dispatch_async(dispatch_get_main_queue(), ^{ [capture begin]; });
+    dispatch_semaphore_wait(capture.semaphore, DISPATCH_TIME_FOREVER);
+    return copyPNGData(capture.pngData, capture.result, outData, outLen, -6);
 }

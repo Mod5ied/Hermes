@@ -8,9 +8,9 @@ export interface ModelInfo {
 }
 
 export const MODELS: Record<string, ModelInfo> = {
-  "gemma-4-31b":  { provider: "cerebras", baseURL: "https://api.cerebras.ai/v1", inPerM: 0.99, outPerM: 1.49, vision: true  },
   "gpt-oss-120b": { provider: "cerebras", baseURL: "https://api.cerebras.ai/v1", inPerM: 0.35, outPerM: 0.75, vision: false },
-  "zai-glm-4.7":  { provider: "cerebras", baseURL: "https://api.cerebras.ai/v1", inPerM: 2.25, outPerM: 2.75, vision: false }, // verified price
+  // Cerebras' public model endpoint currently reports zero-dollar pricing for this newly launched model.
+  "qwen-3.8-27b": { provider: "cerebras", baseURL: "https://api.cerebras.ai/v1", inPerM: 0, outPerM: 0, vision: true },
   "meta-llama/llama-4-scout-17b-16e-instruct":
                   { provider: "groq",     baseURL: "https://api.groq.com/openai/v1", inPerM: 0.11, outPerM: 0.34, vision: true }, // from Groq docs
 };

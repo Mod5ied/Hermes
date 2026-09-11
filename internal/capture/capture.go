@@ -1,3 +1,5 @@
+//go:build darwin && cgo
+
 // Package capture handles screen region selection and in-memory capture.
 package capture
 
@@ -123,9 +125,23 @@ func CaptureImage(r Rect) (image.Image, error) {
 // CaptureFrontWindow captures the frontmost on-screen application window
 // (excluding Hermes) and returns it as an image.Image.
 func CaptureFrontWindow() (image.Image, error) {
+	buf, err := captureFrontWindowBytes()
+	if err != nil {
+		return nil, err
+	}
+	img, err := DecodePNG(buf)
+	if err != nil {
+		return nil, fmt.Errorf("decode front-window capture: %w", err)
+	}
+	if err := ValidateImageContent(img); err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+func captureFrontWindowBytes() ([]byte, error) {
 	var outData unsafe.Pointer
 	var outLen C.size_t
-
 	ret := C.hermes_capture_front_window(&outData, &outLen)
 	if outData != nil {
 		defer C.free(outData)
@@ -136,7 +152,5 @@ func CaptureFrontWindow() (image.Image, error) {
 	if outLen == 0 {
 		return nil, fmt.Errorf("front-window capture returned empty buffer")
 	}
-
-	buf := C.GoBytes(outData, C.int(outLen))
-	return DecodePNG(buf)
+	return C.GoBytes(outData, C.int(outLen)), nil
 }

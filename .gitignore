@@ -1,6 +1,8 @@
 # Build outputs
 /bin/
 /Hermes.app
+/build/
+/dist/
 
 # Worker dependencies
 /hermes/proxy/node_modules/
@@ -13,6 +15,7 @@
 
 # Local code-signing keychain and certificates
 /HermesSigning.keychain-db
+/StartupProfileData-NonInteractive
 /.codesign/
 *.p12
 *.crt

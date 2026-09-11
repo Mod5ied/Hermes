@@ -10,6 +10,7 @@
 
 static NSPanel *gPanel = nil;
 static NSPanel *gAnswerWindow = nil;
+static NSPanel *gContextWindow = nil;
 static NSWindow *gSettingsWindow;
 static NSTextField *gInput = nil;
 static NSTextView *gAnswer = nil;
@@ -20,6 +21,12 @@ static NSTextField *gCountdown = nil;
 static NSView *gIndicatorDot = nil;
 static NSProgressIndicator *gSpinner = nil;
 static NSTextField *gTrayBadge = nil;
+static NSTextField *gDocumentBadge = nil;
+static NSTextField *gDocumentSummary = nil;
+static NSTextField *gDocumentNames = nil;
+static NSTextView *gDocumentPaste = nil;
+static NSButton *gDiscussionButton = nil;
+static NSButton *gQuestionButton = nil;
 static NSButton *gMicButton = nil;
 static HermesAudioLinesView *gAudioLinesView = nil;
 static NSButton *gTypeButton = nil;
@@ -178,6 +185,7 @@ static const CGFloat kBarWidth = 688.0;
 @end
 
 static void updateAnswerWindowPosition(void);
+static void updateContextWindowPosition(void);
 
 @interface HermesOverlayPanel : NSPanel <NSWindowDelegate>
 @end
@@ -206,12 +214,25 @@ static void updateAnswerWindowPosition(void);
     [NSApp activateIgnoringOtherApps:YES];
 }
 - (void)windowDidMove:(NSNotification *)notification {
-    // Keep the answer window docked under the bar while it's dragged.
+    // Keep auxiliary windows docked under the bar while it's dragged.
     updateAnswerWindowPosition();
+    updateContextWindowPosition();
 }
 @end
 
 @interface HermesAnswerPanel : NSPanel
+@end
+
+@interface HermesContextPanel : NSPanel
+@end
+
+@implementation HermesContextPanel
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (BOOL)canBecomeMainWindow {
+    return NO;
+}
 @end
 
 @implementation HermesAnswerPanel
@@ -241,6 +262,7 @@ static void applyStealthWindow(NSWindow *window) {
 static void applyStealth(void) {
     applyStealthWindow(gPanel);
     applyStealthWindow(gAnswerWindow);
+    applyStealthWindow(gContextWindow);
 }
 
 static void reapplyStealth(void) {
@@ -265,11 +287,21 @@ static void updateAnswerWindowPosition(void) {
     [gAnswerWindow setFrame:ansFrame display:YES animate:NO];
 }
 
+static void updateContextWindowPosition(void) {
+    if (!gPanel || !gContextWindow) return;
+    NSRect barFrame = [gPanel frame];
+    NSRect contextFrame = [gContextWindow frame];
+    contextFrame.origin.x = barFrame.origin.x;
+    contextFrame.origin.y = barFrame.origin.y - NSHeight(contextFrame) - 4;
+    [gContextWindow setFrame:contextFrame display:YES animate:NO];
+}
+
 static void showAnswerWindow(void) {
     if (!gAnswerWindow) {
         fprintf(stderr, "Hermes: showAnswerWindow called with nil window\n");
         return;
     }
+    if (gContextWindow) [gContextWindow orderOut:nil];
     updateAnswerWindowPosition();
     fprintf(stderr, "Hermes: showing answer window visible=%d frame=%s\n",
             [gAnswerWindow isVisible] ? 1 : 0,
@@ -285,6 +317,19 @@ static void hideAnswerWindow(void) {
     [gAnswerWindow orderOut:nil];
 }
 
+static void showContextWindow(void) {
+    if (!gContextWindow) return;
+    hideAnswerWindow();
+    updateContextWindowPosition();
+    [NSApp activateIgnoringOtherApps:YES];
+    [gContextWindow makeKeyAndOrderFront:nil];
+    reapplyStealth();
+}
+
+static void hideContextWindow(void) {
+    if (gContextWindow) [gContextWindow orderOut:nil];
+}
+
 static NSImage *sfIcon(NSString *name, NSString *tip) {
     return [NSImage imageWithSystemSymbolName:name accessibilityDescription:tip];
 }
@@ -297,18 +342,43 @@ static NSButton *makeIconButton(NSString *name, NSString *tip, SEL action) {
     return btn;
 }
 
+static NSButton *makeFallbackIconButton(NSString *primary, NSString *fallback, NSString *tip, SEL action) {
+    NSButton *button = makeIconButton(primary, tip, action);
+    if (![button image]) {
+        [button setImage:sfIcon(fallback, tip)];
+    }
+    return button;
+}
+
 static NSColor *hermesAmber(void);
+
+static NSImage *discussionIcon(BOOL enabled) {
+    NSImage *image = sfIcon(@"ear.and.waveform", @"Discussion Mode (CMD+D)");
+    if (!image) image = sfIcon(@"ear", @"Discussion Mode (CMD+D)");
+    NSColor *color = enabled ? hermesAmber() : [NSColor whiteColor];
+    NSImageSymbolConfiguration *palette = [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
+    NSImage *configured = [image imageWithSymbolConfiguration:palette];
+    NSImage *result = configured ?: image;
+    [result setTemplate:NO];
+    return result;
+}
 
 static void updateMicButton(void) {
     if (gListening) {
         [gMicButton setImage:nil];
+        [gMicButton setContentTintColor:hermesAmber()];
+        [gMicButton setToolTip:@"Listening on (CMD+L)"];
         if (gAudioLinesView) {
+            for (CALayer *bar in gAudioLinesView.bars) {
+                bar.backgroundColor = hermesAmber().CGColor;
+            }
             [gAudioLinesView setHidden:NO];
             [gAudioLinesView startAnimating];
         }
     } else {
         [gMicButton setImage:sfIcon(@"mic", @"Toggle Listen (CMD+L)")];
         [gMicButton setContentTintColor:[NSColor whiteColor]];
+        [gMicButton setToolTip:@"Listening off (CMD+L)"];
         if (gAudioLinesView) {
             [gAudioLinesView stopAnimating];
             [gAudioLinesView setHidden:YES];
@@ -369,7 +439,7 @@ void hermesOverlayInit(bool stealth) {
     static const CGFloat kCapsuleGap = 8.0;   // gap between the two capsules
     static const CGFloat kToolsPadX = 9.0;    // horizontal padding inside the tools capsule
     static const CGFloat kToolsGap = 7.0;     // gap between the tools capsule's icons
-    static const NSInteger kToolCount = 4;    // Capture, Attachments, History, Settings
+    static const NSInteger kToolCount = 6;    // Questions, capture, screenshots, documents, history, settings
     // The old single-strip bar's 10pt radius reads boxy once split into two
     // short capsules; the reference (HTML.md, 26px on a ~54pt-tall segment)
     // is a true pill/stadium shape, so match that ratio against our own
@@ -399,6 +469,15 @@ void hermesOverlayInit(bool stealth) {
     // ---- Compose capsule: mic, input field, rate-limit status cluster ----
     CGFloat xpos = kOuterPad;
     CGFloat ypos = (kBarHeight - kIconSize) / 2.0;
+
+    // Discussion Mode is deliberately the first icon in the complete command
+    // bar, matching the ear-and-speech reference supplied for this feature.
+    NSButton *discussionBtn = makeFallbackIconButton(@"ear.and.waveform", @"ear", @"Discussion Mode (CMD+D)", @selector(onDiscussionToggle:));
+    [discussionBtn setImage:discussionIcon(NO)];
+    [discussionBtn setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
+    [composeCapsule addSubview:discussionBtn];
+    gDiscussionButton = discussionBtn;
+    xpos += kIconSize + kIconGap;
 
     gMicButton = makeIconButton(@"mic", @"Toggle Listen (CMD+L)", @selector(onMic:));
     [gMicButton setFrame:NSMakeRect(xpos, ypos, kIconSize, kIconSize)];
@@ -471,6 +550,12 @@ void hermesOverlayInit(bool stealth) {
     CGFloat txpos = kToolsPadX;
     CGFloat typos = (kBarHeight - kIconSize) / 2.0;
 
+    NSButton *questionBtn = makeIconButton(@"questionmark.bubble", @"Suggest two discussion questions (CMD+A)", @selector(onAskQuestions:));
+    [questionBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:questionBtn];
+    gQuestionButton = questionBtn;
+    txpos += kIconSize + kToolsGap;
+
     NSButton *capBtn = makeIconButton(@"camera.viewfinder", @"Capture (CMD+H)", @selector(onCapture:));
     [capBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
     [toolsCapsule addSubview:capBtn];
@@ -491,6 +576,24 @@ void hermesOverlayInit(bool stealth) {
     [gTrayBadge setStringValue:@""];
     [gTrayBadge setRefusesFirstResponder:YES];
     [toolsCapsule addSubview:gTrayBadge];
+
+    txpos += kIconSize + kToolsGap;
+
+    NSButton *documentBtn = makeIconButton(@"plus", @"Add document context", @selector(onDocumentContext:));
+    [documentBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
+    [toolsCapsule addSubview:documentBtn];
+
+    gDocumentBadge = [[NSTextField alloc] initWithFrame:NSMakeRect(txpos + kIconSize - 10, typos + kIconSize - 12, 16, 14)];
+    [gDocumentBadge setEditable:NO];
+    [gDocumentBadge setBordered:NO];
+    [gDocumentBadge setDrawsBackground:NO];
+    [gDocumentBadge setTextColor:[NSColor colorWithCalibratedRed:0.35 green:0.85 blue:1.0 alpha:1.0]];
+    [gDocumentBadge setFont:[NSFont boldSystemFontOfSize:9]];
+    [gDocumentBadge setStringValue:@""];
+    [gDocumentBadge setAlignment:NSTextAlignmentCenter];
+    [gDocumentBadge setRefusesFirstResponder:YES];
+    [gDocumentBadge setHidden:YES];
+    [toolsCapsule addSubview:gDocumentBadge];
 
     txpos += kIconSize + kToolsGap;
 
@@ -516,6 +619,106 @@ void hermesOverlayInit(bool stealth) {
     NSButton *gearBtn = makeIconButton(@"gearshape", @"Settings", @selector(onSettings:));
     [gearBtn setFrame:NSMakeRect(txpos, typos, kIconSize, kIconSize)];
     [toolsCapsule addSubview:gearBtn];
+
+    // Document-context panel. It is a child of the command bar and receives
+    // the same screen-sharing exclusion as the bar and answer panel.
+    static const CGFloat kContextHeight = 292.0;
+    NSRect contextFrame = NSMakeRect(x, NSHeight(screen) - kBarHeight - 8 - kContextHeight - 4,
+                                     kBarWidth, kContextHeight);
+    HermesContextPanel *contextWindow = [[HermesContextPanel alloc] initWithContentRect:contextFrame
+                                                                              styleMask:NSWindowStyleMaskBorderless
+                                                                                backing:NSBackingStoreBuffered
+                                                                                  defer:NO];
+    [contextWindow setTitle:@"Hermes Document Context"];
+    [contextWindow setBackgroundColor:[NSColor clearColor]];
+    [contextWindow setOpaque:NO];
+    [contextWindow setHasShadow:YES];
+    [contextWindow setLevel:NSFloatingWindowLevel];
+    [contextWindow setIgnoresMouseEvents:NO];
+    [contextWindow setHidesOnDeactivate:NO];
+    [contextWindow setReleasedWhenClosed:NO];
+    applyStealthWindow(contextWindow);
+    gContextWindow = contextWindow;
+
+    HermesOverlayView *contextRoot = [[HermesOverlayView alloc] initWithFrame:NSMakeRect(0, 0, kBarWidth, kContextHeight)];
+    [contextRoot setWantsLayer:YES];
+    contextRoot.layer.cornerRadius = 10.0;
+    contextRoot.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.10 alpha:0.97].CGColor;
+    [contextWindow setContentView:contextRoot];
+
+    NSTextField *contextTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 13, 300, 22)];
+    [contextTitle setStringValue:@"Document context"];
+    [contextTitle setFont:[NSFont boldSystemFontOfSize:14]];
+    [contextTitle setTextColor:[NSColor whiteColor]];
+    [contextTitle setEditable:NO];
+    [contextTitle setBordered:NO];
+    [contextTitle setDrawsBackground:NO];
+    [contextRoot addSubview:contextTitle];
+
+    NSButton *contextClose = makeIconButton(@"xmark", @"Close document context", @selector(onDocumentClose:));
+    [contextClose setFrame:NSMakeRect(kBarWidth - 42, 9, 28, 28)];
+    [contextRoot addSubview:contextClose];
+
+    gDocumentSummary = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 38, kBarWidth - 70, 18)];
+    [gDocumentSummary setStringValue:@"No context attached"];
+    [gDocumentSummary setFont:[NSFont systemFontOfSize:11]];
+    [gDocumentSummary setTextColor:[NSColor colorWithCalibratedWhite:0.72 alpha:1.0]];
+    [gDocumentSummary setEditable:NO];
+    [gDocumentSummary setBordered:NO];
+    [gDocumentSummary setDrawsBackground:NO];
+    [contextRoot addSubview:gDocumentSummary];
+
+    gDocumentNames = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 57, kBarWidth - 32, 34)];
+    [gDocumentNames setStringValue:@"Paste source material below or upload UTF-8 text, Markdown, source-code, or JSON files."];
+    [gDocumentNames setFont:[NSFont systemFontOfSize:10]];
+    [gDocumentNames setTextColor:[NSColor colorWithCalibratedWhite:0.58 alpha:1.0]];
+    [gDocumentNames setEditable:NO];
+    [gDocumentNames setBordered:NO];
+    [gDocumentNames setDrawsBackground:NO];
+    [gDocumentNames setLineBreakMode:NSLineBreakByTruncatingTail];
+    [contextRoot addSubview:gDocumentNames];
+
+    NSTextField *pasteLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 94, 300, 18)];
+    [pasteLabel setStringValue:@"Paste text or JSON"];
+    [pasteLabel setFont:[NSFont boldSystemFontOfSize:11]];
+    [pasteLabel setTextColor:[NSColor whiteColor]];
+    [pasteLabel setEditable:NO];
+    [pasteLabel setBordered:NO];
+    [pasteLabel setDrawsBackground:NO];
+    [contextRoot addSubview:pasteLabel];
+
+    NSScrollView *pasteScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 114, kBarWidth - 32, 120)];
+    [pasteScroll setHasVerticalScroller:YES];
+    [pasteScroll setBorderType:NSBezelBorder];
+    [pasteScroll setDrawsBackground:YES];
+    [pasteScroll setBackgroundColor:[NSColor colorWithCalibratedWhite:0.13 alpha:1.0]];
+    gDocumentPaste = [[NSTextView alloc] initWithFrame:[[pasteScroll contentView] bounds]];
+    [gDocumentPaste setFont:[NSFont userFixedPitchFontOfSize:11.0]];
+    [gDocumentPaste setTextColor:[NSColor whiteColor]];
+    [gDocumentPaste setBackgroundColor:[NSColor colorWithCalibratedWhite:0.13 alpha:1.0]];
+    [gDocumentPaste setRichText:NO];
+    [gDocumentPaste setAutomaticQuoteSubstitutionEnabled:NO];
+    [gDocumentPaste setAutomaticDashSubstitutionEnabled:NO];
+    [gDocumentPaste setVerticallyResizable:YES];
+    [gDocumentPaste setHorizontallyResizable:NO];
+    [gDocumentPaste setAutoresizingMask:NSViewWidthSizable];
+    [pasteScroll setDocumentView:gDocumentPaste];
+    [contextRoot addSubview:pasteScroll];
+
+    NSButton *uploadButton = [NSButton buttonWithTitle:@"Upload files..." target:NSApp action:@selector(onDocumentUpload:)];
+    [uploadButton setFrame:NSMakeRect(16, 246, 112, 28)];
+    [uploadButton setBezelStyle:NSBezelStyleRounded];
+    [contextRoot addSubview:uploadButton];
+
+    NSButton *pasteButton = [NSButton buttonWithTitle:@"Add pasted text" target:NSApp action:@selector(onDocumentPaste:)];
+    [pasteButton setFrame:NSMakeRect(138, 246, 126, 28)];
+    [pasteButton setBezelStyle:NSBezelStyleRounded];
+    [contextRoot addSubview:pasteButton];
+
+    NSButton *clearDocuments = [NSButton buttonWithTitle:@"Clear context" target:NSApp action:@selector(onDocumentClear:)];
+    [clearDocuments setFrame:NSMakeRect(kBarWidth - 132, 246, 116, 28)];
+    [clearDocuments setBezelStyle:NSBezelStyleRounded];
+    [contextRoot addSubview:clearDocuments];
 
     // Answer panel — separate borderless panel so it can extend below the bar.
     NSRect answerFrame = NSMakeRect(x, NSHeight(screen) - kBarHeight - 8 - 260 - 4,
@@ -651,6 +854,10 @@ void hermesOverlayInit(bool stealth) {
         [gPanel addChildWindow:gAnswerWindow ordered:NSWindowAbove];
         [gAnswerWindow orderOut:nil];
     }
+    if (gContextWindow) {
+        [gPanel addChildWindow:gContextWindow ordered:NSWindowAbove];
+        [gContextWindow orderOut:nil];
+    }
 }
 
 static void ensureShown(void) {
@@ -671,6 +878,7 @@ void hermesOverlayHide(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (gPanel) [gPanel orderOut:nil];
         hideAnswerWindow();
+        hideContextWindow();
     });
 }
 
@@ -690,6 +898,7 @@ void hermesOverlayMove(int dx, int dy) {
         frame.origin.y += dy;
         [gPanel setFrame:frame display:YES animate:NO];
         updateAnswerWindowPosition();
+        updateContextWindowPosition();
     });
 }
 
@@ -697,6 +906,12 @@ void hermesOverlaySetStealth(bool on) {
     gStealth = on ? YES : NO;
     dispatch_async(dispatch_get_main_queue(), ^{
         reapplyStealth();
+    });
+}
+
+void hermesOverlayQuit(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp terminate:nil];
     });
 }
 
@@ -708,21 +923,17 @@ void hermesOverlaySetInstruction(const char *text) {
     });
 }
 
+static char *copyInstruction(void) {
+    if (!gInput) return NULL;
+    NSString *value = [gInput stringValue];
+    if (!value) return NULL;
+    return strdup([value UTF8String]);
+}
+
 char *hermesOverlayGetInstruction(void) {
+    if ([NSThread isMainThread]) return copyInstruction();
     __block char *result = NULL;
-    if ([NSThread isMainThread]) {
-        if (gInput) {
-            NSString *s = [gInput stringValue];
-            if (s) result = strdup([s UTF8String]);
-        }
-    } else {
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            if (gInput) {
-                NSString *s = [gInput stringValue];
-                if (s) result = strdup([s UTF8String]);
-            }
-        });
-    }
+    dispatch_sync(dispatch_get_main_queue(), ^{ result = copyInstruction(); });
     return result;
 }
 
@@ -782,111 +993,136 @@ static NSString *detectLanguageTag(NSString *code) {
     return @"code";
 }
 
-static NSAttributedString *highlightCode(NSString *code) {
-    NSFont *font = codeFont();
-    NSColor *defaultColor = hexColor(0xD4D4D4);
-    NSColor *commentColor = hexColor(0x6A9955);
-    NSColor *stringColor = hexColor(0xCE9178);
-    NSColor *numberColor = hexColor(0xB5CEA8);
-    NSColor *keywordColor = hexColor(0xC586C0);
-    NSColor *functionColor = hexColor(0xDCDCAA);
+typedef struct {
+    __unsafe_unretained NSColor *comment;
+    __unsafe_unretained NSColor *string;
+    __unsafe_unretained NSColor *number;
+    __unsafe_unretained NSColor *keyword;
+    __unsafe_unretained NSColor *function;
+} HermesSyntaxColors;
 
+static BOOL lineCommentStart(unichar current, unichar next) {
+    return (current == '/' && next == '/') || current == '#';
+}
+
+static BOOL blockCommentStart(unichar current, unichar next) {
+    return current == '/' && next == '*';
+}
+
+static BOOL stringStart(unichar character) {
+    return character == '"' || character == '\'' || character == '`';
+}
+
+static BOOL identifierCharacter(unichar character) {
+    return isalnum(character) || character == '_';
+}
+
+static NSUInteger lineCommentEnd(NSString *code, NSUInteger start) {
+    NSUInteger index = start;
+    while (index < code.length && [code characterAtIndex:index] != '\n') index++;
+    return index;
+}
+
+static NSUInteger blockCommentEnd(NSString *code, NSUInteger start) {
+    NSUInteger index = start + 2;
+    while (index + 1 < code.length) {
+        if ([code characterAtIndex:index] == '*' && [code characterAtIndex:index + 1] == '/') return index + 2;
+        index++;
+    }
+    return code.length;
+}
+
+static NSUInteger stringEnd(NSString *code, NSUInteger start) {
+    unichar quote = [code characterAtIndex:start];
+    NSUInteger index = start + 1;
+    while (index < code.length) {
+        unichar character = [code characterAtIndex:index];
+        if (character == '\\' && index + 1 < code.length) {
+            index += 2;
+            continue;
+        }
+        if (character == quote) return index + 1;
+        index++;
+    }
+    return index;
+}
+
+static NSUInteger identifierEnd(NSString *code, NSUInteger start) {
+    NSUInteger index = start;
+    while (index < code.length) {
+        if (!identifierCharacter([code characterAtIndex:index])) break;
+        index++;
+    }
+    return index;
+}
+
+static NSUInteger nextNonWhitespace(NSString *code, NSUInteger start) {
+    NSUInteger index = start;
+    while (index < code.length && isspace([code characterAtIndex:index])) index++;
+    return index;
+}
+
+static unichar characterAfter(NSString *code, NSUInteger index) {
+    if (index + 1 >= code.length) return 0;
+    return [code characterAtIndex:index + 1];
+}
+
+static void colorIdentifier(NSMutableAttributedString *output, NSString *code, NSRange range,
+                            unichar first, HermesSyntaxColors colors) {
+    NSString *token = [code substringWithRange:range];
+    NSUInteger next = nextNonWhitespace(code, NSMaxRange(range));
+    BOOL followedByParen = next < code.length && [code characterAtIndex:next] == '(';
+    if (isKeyword(token)) {
+        [output addAttribute:NSForegroundColorAttributeName value:colors.keyword range:range];
+    } else if (isdigit(first)) {
+        [output addAttribute:NSForegroundColorAttributeName value:colors.number range:range];
+    } else if (followedByParen) {
+        [output addAttribute:NSForegroundColorAttributeName value:colors.function range:range];
+    }
+}
+
+static NSUInteger highlightTokenAt(NSString *code, NSMutableAttributedString *output,
+                                   NSUInteger index, HermesSyntaxColors colors) {
+    unichar current = [code characterAtIndex:index];
+    unichar next = characterAfter(code, index);
+    if (lineCommentStart(current, next)) {
+        NSUInteger end = lineCommentEnd(code, index);
+        [output addAttribute:NSForegroundColorAttributeName value:colors.comment range:NSMakeRange(index, end - index)];
+        return end;
+    }
+    if (blockCommentStart(current, next)) {
+        NSUInteger end = blockCommentEnd(code, index);
+        [output addAttribute:NSForegroundColorAttributeName value:colors.comment range:NSMakeRange(index, end - index)];
+        return end;
+    }
+    if (stringStart(current)) {
+        NSUInteger end = stringEnd(code, index);
+        [output addAttribute:NSForegroundColorAttributeName value:colors.string range:NSMakeRange(index, end - index)];
+        return end;
+    }
+    if (identifierCharacter(current)) {
+        NSUInteger end = identifierEnd(code, index);
+        colorIdentifier(output, code, NSMakeRange(index, end - index), current, colors);
+        return end;
+    }
+    return index + 1;
+}
+
+static NSAttributedString *highlightCode(NSString *code) {
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
     [para setLineHeightMultiple:1.4];
-
     NSDictionary *baseAttrs = @{
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: defaultColor,
+        NSFontAttributeName: codeFont(),
+        NSForegroundColorAttributeName: hexColor(0xD4D4D4),
         NSParagraphStyleAttributeName: para
     };
     NSMutableAttributedString *out = [[NSMutableAttributedString alloc] initWithString:code attributes:baseAttrs];
-
-    NSUInteger len = code.length;
+    HermesSyntaxColors colors = {
+        .comment = hexColor(0x6A9955), .string = hexColor(0xCE9178), .number = hexColor(0xB5CEA8),
+        .keyword = hexColor(0xC586C0), .function = hexColor(0xDCDCAA)
+    };
     NSUInteger i = 0;
-    while (i < len) {
-        unichar c = [code characterAtIndex:i];
-        unichar next = (i + 1 < len) ? [code characterAtIndex:i + 1] : 0;
-
-        // Line comments (// or #)
-        if ((c == '/' && next == '/') || c == '#') {
-            NSUInteger start = i;
-            while (i < len && [code characterAtIndex:i] != '\n') i++;
-            [out addAttribute:NSForegroundColorAttributeName value:commentColor range:NSMakeRange(start, i - start)];
-            continue;
-        }
-
-        // Block comments (/* ... */)
-        if (c == '/' && next == '*') {
-            NSUInteger start = i;
-            i += 2;
-            while (i + 1 < len) {
-                if ([code characterAtIndex:i] == '*' && [code characterAtIndex:i + 1] == '/') {
-                    i += 2;
-                    break;
-                }
-                i++;
-            }
-            if (i < len && !(i >= 2 && [code characterAtIndex:i - 1] == '/' && [code characterAtIndex:i - 2] == '*')) {
-                i = len;
-            }
-            [out addAttribute:NSForegroundColorAttributeName value:commentColor range:NSMakeRange(start, i - start)];
-            continue;
-        }
-
-        // Strings
-        if (c == '"' || c == '\'' || c == '`') {
-            unichar quote = c;
-            NSUInteger start = i;
-            i++;
-            while (i < len) {
-                unichar ch = [code characterAtIndex:i];
-                if (ch == '\\' && i + 1 < len) {
-                    i += 2;
-                    continue;
-                }
-                if (ch == quote) {
-                    i++;
-                    break;
-                }
-                i++;
-            }
-            [out addAttribute:NSForegroundColorAttributeName value:stringColor range:NSMakeRange(start, i - start)];
-            continue;
-        }
-
-        // Identifiers / numbers
-        if (isalnum(c) || c == '_') {
-            NSUInteger start = i;
-            while (i < len) {
-                unichar ch = [code characterAtIndex:i];
-                if (isalnum(ch) || ch == '_') {
-                    i++;
-                } else {
-                    break;
-                }
-            }
-            NSUInteger end = i;
-            NSRange tokenRange = NSMakeRange(start, end - start);
-            NSString *token = [code substringWithRange:tokenRange];
-            BOOL startsDigit = isdigit(c);
-
-            // Peek ahead over whitespace to detect function calls.
-            NSUInteger j = i;
-            while (j < len && isspace([code characterAtIndex:j])) j++;
-            BOOL followedByParen = (j < len && [code characterAtIndex:j] == '(');
-
-            if (isKeyword(token)) {
-                [out addAttribute:NSForegroundColorAttributeName value:keywordColor range:tokenRange];
-            } else if (startsDigit) {
-                [out addAttribute:NSForegroundColorAttributeName value:numberColor range:tokenRange];
-            } else if (followedByParen) {
-                [out addAttribute:NSForegroundColorAttributeName value:functionColor range:tokenRange];
-            }
-            continue;
-        }
-
-        i++;
-    }
+    while (i < code.length) i = highlightTokenAt(code, out, i, colors);
     return out;
 }
 
@@ -927,49 +1163,60 @@ static NSAttributedString *formatAnswerText(NSString *text) {
 // If there are no ``` fences at all, the whole answer is one block: code
 // when the model classified it AnswerTypeCode, prose otherwise. This is the
 // "straightforward markdown-style parse" TASK.md calls for.
+static BOOL looksLikeLanguageTag(NSString *line) {
+    return line.length > 0 && line.length < 20 &&
+        [line rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]].location == NSNotFound;
+}
+
+static NSDictionary *singleAnswerBlock(NSString *text, NSInteger answerType) {
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return nil;
+    if (answerType == AnswerTypeCode) return @{@"type": @"code", @"text": trimmed, @"lang": detectLanguageTag(trimmed)};
+    return @{@"type": @"prose", @"text": trimmed};
+}
+
+static void appendProseBlock(NSMutableArray *blocks, NSString *part) {
+    NSString *trimmed = [part stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length > 0) [blocks addObject:@{@"type": @"prose", @"text": trimmed}];
+}
+
+static NSArray *extractCodeLanguage(NSString *part) {
+    NSString *language = nil;
+    NSString *code = part;
+    NSRange newline = [code rangeOfString:@"\n"];
+    if (newline.location != NSNotFound) {
+        NSString *first = [[code substringToIndex:newline.location]
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (looksLikeLanguageTag(first)) {
+            language = [first lowercaseString];
+            code = [code substringFromIndex:newline.location + 1];
+        }
+    }
+    return @[language ?: [NSNull null], code];
+}
+
+static void appendCodeBlock(NSMutableArray *blocks, NSString *part) {
+    NSArray *parsed = extractCodeLanguage(part);
+    NSString *language = parsed[0] == [NSNull null] ? nil : parsed[0];
+    NSString *code = [parsed[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (code.length == 0) return;
+    if (!language) language = detectLanguageTag(code);
+    [blocks addObject:@{@"type": @"code", @"text": code, @"lang": language}];
+}
+
+static void appendAnswerPart(NSMutableArray *blocks, NSString *part, NSUInteger index) {
+    if (index % 2 == 0) appendProseBlock(blocks, part);
+    else appendCodeBlock(blocks, part);
+}
+
 static NSArray<NSDictionary *> *parseAnswerBlocks(NSString *text, NSInteger answerType) {
-    NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
-    NSCharacterSet *trimSet = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-
     if ([text rangeOfString:@"```"].location == NSNotFound) {
-        NSString *trimmed = [text stringByTrimmingCharactersInSet:trimSet];
-        if (trimmed.length == 0) return blocks;
-        if (answerType == AnswerTypeCode) {
-            [blocks addObject:@{@"type": @"code", @"text": trimmed, @"lang": detectLanguageTag(trimmed)}];
-        } else {
-            [blocks addObject:@{@"type": @"prose", @"text": trimmed}];
-        }
-        return blocks;
+        NSDictionary *block = singleAnswerBlock(text, answerType);
+        return block ? @[block] : @[];
     }
-
+    NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
     NSArray<NSString *> *parts = [text componentsSeparatedByString:@"```"];
-    for (NSUInteger i = 0; i < parts.count; i++) {
-        NSString *part = parts[i];
-        if (i % 2 == 0) {
-            // Trim: fence-adjacent blank lines would otherwise render as
-            // literal empty vertical space between prose and the code card.
-            NSString *trimmedPart = [part stringByTrimmingCharactersInSet:trimSet];
-            if (trimmedPart.length == 0) continue;
-            [blocks addObject:@{@"type": @"prose", @"text": trimmedPart}];
-        } else {
-            NSString *code = part;
-            NSString *lang = nil;
-            NSRange newline = [code rangeOfString:@"\n"];
-            if (newline.location != NSNotFound) {
-                NSString *firstLine = [[code substringToIndex:newline.location] stringByTrimmingCharactersInSet:trimSet];
-                BOOL looksLikeLangTag = firstLine.length > 0 && firstLine.length < 20 &&
-                    [firstLine rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]].location == NSNotFound;
-                if (looksLikeLangTag) {
-                    lang = [firstLine lowercaseString];
-                    code = [code substringFromIndex:newline.location + 1];
-                }
-            }
-            code = [code stringByTrimmingCharactersInSet:trimSet];
-            if (code.length == 0) continue;
-            if (!lang) lang = detectLanguageTag(code);
-            [blocks addObject:@{@"type": @"code", @"text": code, @"lang": lang}];
-        }
-    }
+    for (NSUInteger i = 0; i < parts.count; i++) appendAnswerPart(blocks, parts[i], i);
     return blocks;
 }
 
@@ -1109,6 +1356,37 @@ static void updateAnswerHeader(void) {
 // stack of prose text views and HermesCodeCards, then swaps it in as
 // gAnswerScroll's document view. Called once per finished answer (Finalize,
 // history navigation, history exit) -- never while streaming.
+static CGFloat appendCodeAnswerBlock(NSView *container, NSDictionary *block, CGFloat width, CGFloat y) {
+    CGFloat cardWidth = width * 0.9;
+    CGFloat cardX = (width - cardWidth) / 2.0;
+    HermesCodeCard *card = [[HermesCodeCard alloc] initWithWidth:cardWidth language:block[@"lang"] code:block[@"text"]];
+    [card setFrameOrigin:NSMakePoint(cardX, y)];
+    [container addSubview:card];
+    return NSHeight(card.frame);
+}
+
+static CGFloat appendProseAnswerBlock(NSView *container, NSDictionary *block, CGFloat width, CGFloat y) {
+    NSAttributedString *attributed = formatAnswerText(block[@"text"]);
+    CGFloat height = measureTextHeight(attributed, width);
+    NSTextView *view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, y, width, height)];
+    [view setEditable:NO];
+    [view setSelectable:YES];
+    [view setDrawsBackground:NO];
+    [view setTextContainerInset:NSMakeSize(0, 0)];
+    [[view textContainer] setWidthTracksTextView:YES];
+    [[view textContainer] setContainerSize:NSMakeSize(width, FLT_MAX)];
+    [view setHorizontallyResizable:NO];
+    [view setVerticallyResizable:NO];
+    [[view textStorage] setAttributedString:attributed];
+    [container addSubview:view];
+    return height;
+}
+
+static CGFloat appendAnswerBlock(NSView *container, NSDictionary *block, CGFloat width, CGFloat y) {
+    if ([block[@"type"] isEqualToString:@"code"]) return appendCodeAnswerBlock(container, block, width, y);
+    return appendProseAnswerBlock(container, block, width, y);
+}
+
 static void rebuildAnswerBody(void) {
     if (!gAnswerScroll) return;
     updateAnswerHeader();
@@ -1129,32 +1407,9 @@ static void rebuildAnswerBody(void) {
     container.layer.backgroundColor = [NSColor clearColor].CGColor;
 
     static const CGFloat kBlockGap = 6.0;
-    static const CGFloat kCardWidthFraction = 0.9;
     CGFloat y = 0;
     for (NSDictionary *block in blocks) {
-        if ([block[@"type"] isEqualToString:@"code"]) {
-            CGFloat cardWidth = width * kCardWidthFraction;
-            CGFloat cardX = (width - cardWidth) / 2.0;
-            HermesCodeCard *card = [[HermesCodeCard alloc] initWithWidth:cardWidth language:block[@"lang"] code:block[@"text"]];
-            [card setFrameOrigin:NSMakePoint(cardX, y)];
-            [container addSubview:card];
-            y += NSHeight(card.frame) + kBlockGap;
-        } else {
-            NSAttributedString *attr = formatAnswerText(block[@"text"]);
-            CGFloat h = measureTextHeight(attr, width);
-            NSTextView *proseView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, y, width, h)];
-            [proseView setEditable:NO];
-            [proseView setSelectable:YES];
-            [proseView setDrawsBackground:NO];
-            [proseView setTextContainerInset:NSMakeSize(0, 0)];
-            [[proseView textContainer] setWidthTracksTextView:YES];
-            [[proseView textContainer] setContainerSize:NSMakeSize(width, FLT_MAX)];
-            [proseView setHorizontallyResizable:NO];
-            [proseView setVerticallyResizable:NO];
-            [[proseView textStorage] setAttributedString:attr];
-            [container addSubview:proseView];
-            y += h + kBlockGap;
-        }
+        y += appendAnswerBlock(container, block, width, y) + kBlockGap;
     }
     if (y > 0) y -= kBlockGap;
     [container setFrame:NSMakeRect(0, 0, width, y)];
@@ -1274,24 +1529,19 @@ void hermesOverlaySetPassBalance(bool active, int pct) {
     });
 }
 
-void hermesOverlaySetOpacity(int pct) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!gPanel) return;
-        CGFloat a = pct / 100.0;
-        if (a < 0.2) a = 0.2;
-        if (a > 1.0) a = 1.0;
-        [gPanel setAlphaValue:a];
+static void applyOverlayOpacity(int pct) {
+    if (!gPanel) return;
+    CGFloat alpha = fmax(0.2, fmin(1.0, pct / 100.0));
+    [gPanel setAlphaValue:alpha];
+    if (gContextWindow) [gContextWindow setAlphaValue:alpha];
+    if (gInput) {
+        CGFloat white = fmin(1.0, 0.85 + 0.15 * ((1.0 - alpha) / 0.8));
+        [gInput setTextColor:[NSColor colorWithCalibratedWhite:white alpha:1.0]];
+    }
+}
 
-        // The lower the opacity, the more the desktop shows through the
-        // capsules, so brighten the input text toward pure white to keep it
-        // readable; at full opacity it stays a slightly softer off-white.
-        if (gInput) {
-            CGFloat t = 1.0 - a; // 0 at pct=100, up to 0.8 at pct=20
-            CGFloat white = 0.85 + 0.15 * (t / 0.8);
-            if (white > 1.0) white = 1.0;
-            [gInput setTextColor:[NSColor colorWithCalibratedWhite:white alpha:1.0]];
-        }
-    });
+void hermesOverlaySetOpacity(int pct) {
+    dispatch_async(dispatch_get_main_queue(), ^{ applyOverlayOpacity(pct); });
 }
 
 void hermesOverlaySetBusy(bool on) {
@@ -1318,6 +1568,42 @@ void hermesOverlaySetTrayCount(int n) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!gTrayBadge) return;
         [gTrayBadge setStringValue:n > 0 ? [NSString stringWithFormat:@"%d", n] : @""];
+    });
+}
+
+static NSString *documentSummaryText(int count, int bytes) {
+    if (count == 0) return @"No context attached";
+    NSString *suffix = count == 1 ? @"" : @"s";
+    return [NSString stringWithFormat:@"%d item%@, %.1f KB, accuracy mode enabled",
+            count, suffix, (double)bytes / 1024.0];
+}
+
+static NSString *documentNamesText(int count, NSString *names) {
+    if (count > 0) return names;
+    return @"Paste source material below or upload UTF-8 text, Markdown, source-code, or JSON files.";
+}
+
+static void applyDocumentContext(int count, int bytes, NSString *names) {
+    if (gDocumentBadge) {
+        [gDocumentBadge setStringValue:count > 0 ? [NSString stringWithFormat:@"%d", count] : @""];
+        [gDocumentBadge setHidden:(count == 0)];
+    }
+    if (gDocumentSummary) [gDocumentSummary setStringValue:documentSummaryText(count, bytes)];
+    if (gDocumentNames) [gDocumentNames setStringValue:documentNamesText(count, names)];
+}
+
+void hermesOverlaySetDocumentContext(int count, int bytes, const char *names) {
+    NSString *nameList = [NSString stringWithUTF8String:names ?: ""];
+    dispatch_async(dispatch_get_main_queue(), ^{ applyDocumentContext(count, bytes, nameList); });
+}
+
+void hermesOverlaySetDiscussionMode(bool enabled) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gDiscussionButton) return;
+        NSColor *tint = enabled ? hermesAmber() : [NSColor whiteColor];
+        [gDiscussionButton setImage:discussionIcon(enabled ? YES : NO)];
+        [gDiscussionButton setContentTintColor:tint];
+        [gDiscussionButton setToolTip:enabled ? @"Discussion Mode on (CMD+D)" : @"Discussion Mode off (CMD+D)"];
     });
 }
 
@@ -1351,30 +1637,36 @@ void hermesOverlayEnterHistory(void) {
     });
 }
 
+static void ensureHistoryUI(void) {
+    if (gInHistory) return;
+    gInHistory = YES;
+    if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
+    if (gHistoryPosition) [gHistoryPosition setHidden:NO];
+    if (gPinButton) [gPinButton setHidden:NO];
+}
+
+static void updateHistoryPosition(int index, int total) {
+    if (gHistoryPosition) [gHistoryPosition setStringValue:[NSString stringWithFormat:@"%d / %d", index + 1, total]];
+    if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:(index > 0)];
+    if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:(index < total - 1)];
+}
+
+static void applyHistoryItem(int index, int total, NSString *answer, int answerType, bool pinned) {
+    ensureHistoryUI();
+    updateHistoryPosition(index, total);
+    if (gAnswerBuffer) {
+        [gAnswerBuffer setString:answer];
+        gAnswerType = answerType;
+        rebuildAnswerBody();
+    }
+    updatePinButton(pinned);
+    showAnswerWindow();
+}
+
 void hermesOverlayShowHistoryItem(int index, int total, const char *question, const char *answerPreview, int answerType, bool pinned) {
     if (!question || !answerPreview) return;
-    NSString *q = [NSString stringWithUTF8String:question];
-    NSString *a = [NSString stringWithUTF8String:answerPreview];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!gInHistory) {
-            gInHistory = YES;
-            if (gAnswerHeader) [gAnswerHeader setStringValue:@"History"];
-            if (gHistoryPosition) [gHistoryPosition setHidden:NO];
-            if (gPinButton) [gPinButton setHidden:NO];
-        }
-        if (gHistoryPosition) {
-            [gHistoryPosition setStringValue:[NSString stringWithFormat:@"%d / %d", index + 1, total]];
-        }
-        if (gAnswerBuffer) {
-            [gAnswerBuffer setString:a];
-            gAnswerType = answerType;
-            rebuildAnswerBody();
-        }
-        updatePinButton(pinned);
-        if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:(index > 0)];
-        if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:(index < total - 1)];
-        showAnswerWindow();
-    });
+    NSString *answer = [NSString stringWithUTF8String:answerPreview];
+    dispatch_async(dispatch_get_main_queue(), ^{ applyHistoryItem(index, total, answer, answerType, pinned); });
 }
 
 void hermesOverlaySetItemPinned(int index, bool pinned) {
@@ -1406,26 +1698,38 @@ void hermesOverlayFlash(const char *msg) {
     });
 }
 
+static void restoreSavedAnswer(void) {
+    if (gAnswerBuffer && gSavedAnswerBuffer) [gAnswerBuffer setString:gSavedAnswerBuffer];
+    [gSavedAnswerBuffer release];
+    gSavedAnswerBuffer = nil;
+}
+
+static void hideHistoryControls(void) {
+    if (gAnswerHeader) [gAnswerHeader setStringValue:@"Hermes"];
+    if (gHistoryPosition) {
+        [gHistoryPosition setStringValue:@""];
+        [gHistoryPosition setHidden:YES];
+    }
+    if (gPinButton) [gPinButton setHidden:YES];
+    if (gCountdown) [gCountdown setHidden:YES];
+}
+
+static void disableHistoryNavigation(void) {
+    if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:NO];
+    if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:NO];
+}
+
+static void applyHistoryExit(void) {
+    gInHistory = NO;
+    gAnswerType = gSavedAnswerType;
+    restoreSavedAnswer();
+    hideHistoryControls();
+    disableHistoryNavigation();
+    rebuildAnswerBody();
+}
+
 void hermesOverlayExitHistory(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        gInHistory = NO;
-        gAnswerType = gSavedAnswerType;
-        if (gAnswerBuffer && gSavedAnswerBuffer) {
-            [gAnswerBuffer setString:gSavedAnswerBuffer];
-        }
-        [gSavedAnswerBuffer release];
-        gSavedAnswerBuffer = nil;
-        if (gAnswerHeader) [gAnswerHeader setStringValue:@"Hermes"];
-        if (gHistoryPosition) {
-            [gHistoryPosition setStringValue:@""];
-            [gHistoryPosition setHidden:YES];
-        }
-        if (gPinButton) [gPinButton setHidden:YES];
-        if (gCountdown) [gCountdown setHidden:YES];
-        if (gPrevAnswerBtn) [gPrevAnswerBtn setEnabled:NO];
-        if (gNextAnswerBtn) [gNextAnswerBtn setEnabled:NO];
-        rebuildAnswerBody();
-    });
+    dispatch_async(dispatch_get_main_queue(), ^{ applyHistoryExit(); });
 }
 
 static void restoreTypeButton(void) {
@@ -1433,26 +1737,32 @@ static void restoreTypeButton(void) {
     if (gTypeBadge) [gTypeBadge setHidden:YES];
 }
 
+static void countdownStep(int seconds, int generation);
+
+static void showCountdownSecond(int seconds, int generation) {
+    [gCountdown setStringValue:@""];
+    if (gTypeBadge) {
+        [gTypeBadge setStringValue:[NSString stringWithFormat:@"%d", seconds]];
+        [gTypeBadge setHidden:NO];
+    }
+    if (gTypeButton) {
+        gTypeButton.layer.backgroundColor = [NSColor colorWithCalibratedRed:1.0 green:0.7 blue:0.0 alpha:1.0].CGColor;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        countdownStep(seconds - 1, generation);
+    });
+}
+
 static void countdownStep(int seconds, int generation) {
     if (!gCountdown) return;
     if (generation != gCountdownGeneration) return;
     if (seconds > 0) {
-        [gCountdown setStringValue:@""];
-        if (gTypeBadge) {
-            [gTypeBadge setStringValue:[NSString stringWithFormat:@"%d", seconds]];
-            [gTypeBadge setHidden:NO];
-        }
-        if (gTypeButton) {
-            gTypeButton.layer.backgroundColor = [NSColor colorWithCalibratedRed:1.0 green:0.7 blue:0.0 alpha:1.0].CGColor;
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            countdownStep(seconds - 1, generation);
-        });
-    } else {
-        [gCountdown setStringValue:@""];
-        restoreTypeButton();
-        hermesOverlayOnTypeReady();
+        showCountdownSecond(seconds, generation);
+        return;
     }
+    [gCountdown setStringValue:@""];
+    restoreTypeButton();
+    hermesOverlayOnTypeReady();
 }
 
 void hermesOverlayCountdown(int seconds) {
@@ -1725,6 +2035,25 @@ static HermesFieldSync *gFieldSync = nil;
 }
 @end
 
+static NSString *modelPopupTitle(NSString *name, BOOL vision) {
+    if (vision) return [NSString stringWithFormat:@"%@  · vision", name];
+    return [NSString stringWithFormat:@"%@  · text", name];
+}
+
+static BOOL appendModelPopupItem(NSDictionary *model, NSString *selectedModel) {
+    NSString *name = model[@"name"];
+    [gSetModel addItemWithTitle:modelPopupTitle(name, [model[@"vision"] boolValue])];
+    [gModelNames addObject:name];
+    if (!selectedModel) return NO;
+    return [name isEqualToString:selectedModel];
+}
+
+static NSInteger updatedSelectedModelIndex(NSDictionary *model, NSString *selectedModel,
+                                           NSInteger current, NSInteger candidate) {
+    if (appendModelPopupItem(model, selectedModel)) return candidate;
+    return current;
+}
+
 static void populateModelPopup(NSString *provider, NSString *selectedModel) {
     fprintf(stderr, "Hermes: populateModelPopup provider=%s gSetModel=%p\n", provider.UTF8String, (void *)gSetModel);
     fflush(stderr);
@@ -1736,16 +2065,7 @@ static void populateModelPopup(NSString *provider, NSString *selectedModel) {
     if (![models isKindOfClass:[NSArray class]]) return;
     NSInteger selectedIdx = 0;
     for (NSInteger i = 0; i < models.count; i++) {
-        NSDictionary *m = models[i];
-        NSString *name = m[@"name"];
-        BOOL vision = [m[@"vision"] boolValue];
-        NSString *title = vision ? [NSString stringWithFormat:@"%@  · vision", name]
-                                 : [NSString stringWithFormat:@"%@  · text", name];
-        [gSetModel addItemWithTitle:title];
-        [gModelNames addObject:name];
-        if (selectedModel && [name isEqualToString:selectedModel]) {
-            selectedIdx = i;
-        }
+        selectedIdx = updatedSelectedModelIndex(models[i], selectedModel, selectedIdx, i);
     }
     if (gSetModel.numberOfItems > 0) {
         [gSetModel selectItemAtIndex:selectedIdx];
@@ -1797,6 +2117,30 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
 @interface HermesResumeTextView : NSTextView
 @end
 
+static id parseJSONData(NSData *data) {
+    NSError *error = nil;
+    id object = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:&error];
+    if (error) return nil;
+    return object;
+}
+
+static NSData *prettyJSONData(id object) {
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingPrettyPrinted error:&error];
+    if (error) return nil;
+    return data;
+}
+
+static NSString *formattedJSON(NSString *raw) {
+    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return nil;
+    id object = parseJSONData(data);
+    if (!object) return nil;
+    NSData *pretty = prettyJSONData(object);
+    if (!pretty) return nil;
+    return [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding];
+}
+
 @implementation HermesResumeTextView
 - (void)paste:(id)sender {
     [super paste:sender];
@@ -1806,15 +2150,7 @@ static NSTextField *makeField(NSRect frame, NSString *value) {
 - (void)formatJSONIfNeeded {
     NSString *raw = [self string];
     if (raw.length == 0) return;
-    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
-    if (!data) return;
-    NSError *error = nil;
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:&error];
-    if (error || !obj) return;
-    NSError *outError = nil;
-    NSData *pretty = [NSJSONSerialization dataWithJSONObject:obj options:NSJSONWritingPrettyPrinted error:&outError];
-    if (outError || !pretty) return;
-    NSString *formatted = [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding];
+    NSString *formatted = formattedJSON(raw);
     if (formatted) [self setString:formatted];
 }
 @end
@@ -2230,15 +2566,8 @@ static void buildProviderPane(void) {
     updateModelTag();
 }
 
-static void buildPassPane(void) {
-    NSView *content = gSettingsContent;
-    if (!content) return;
-    CGFloat cw = content.bounds.size.width;
-    CGFloat padX = 40.0;
-    CGFloat y = content.bounds.size.height - 30.0;
-    addPaneHeader(content, padX, cw, &y, @"Pass", @"A prepaid balance for shared-key access. No BYOK required.");
-
-    NSView *card1 = addCard(content, padX, cw, y, 96);
+static void addPassStatusCard(NSView *content, CGFloat padX, CGFloat width, CGFloat y) {
+    NSView *card1 = addCard(content, padX, width, y, 96);
     CGFloat ringSize = 76;
     NSView *ringWrap = [[NSView alloc] initWithFrame:NSMakeRect(20, 10, ringSize, ringSize)];
     [ringWrap setWantsLayer:YES];
@@ -2261,9 +2590,10 @@ static void buildPassPane(void) {
     [statusLbl setTextColor:gLastPassActive ? hGood() : hTextMuted()];
     [card1 addSubview:statusLbl];
     [card1 addSubview:makeDesc(NSMakeRect(copyX, 36, 260, 16), @"Balance refreshes after each answer")];
-    y -= 96 + 14;
+}
 
-    NSView *card2 = addCard(content, padX, cw, y, 44);
+static void addPassKeyCard(NSView *content, CGFloat padX, CGFloat width, CGFloat y) {
+    NSView *card2 = addCard(content, padX, width, y, 44);
     CGFloat cw2 = card2.bounds.size.width;
     [card2 addSubview:makeLabel(NSMakeRect(16, 13, 100, 18), @"Pass key")];
     CGFloat passBtnW = 68, passFieldW = 130, passGap = 8;
@@ -2275,20 +2605,34 @@ static void buildPassPane(void) {
     NSButton *replaceBtn = makePillButton(hasPassKey ? @"Replace" : @"Done", 1, @selector(onFieldEditToggle:));
     replaceBtn.frame = NSMakeRect(cw2 - 16 - passBtnW, 11, passBtnW, 22);
     [card2 addSubview:replaceBtn];
-    y -= 44 + 14;
+}
 
+static void addDeactivatePassCard(NSView *content, CGFloat padX, CGFloat width, CGFloat y) {
+    NSView *card = addCard(content, padX, width, y, 44);
+    CGFloat cardWidth = card.bounds.size.width;
+    [card addSubview:makeLabel(NSMakeRect(16, 13, 180, 18), @"Deactivate this Pass")];
+    NSButton *button = makePillButton(@"Remove Pass", 0, @selector(onRemovePass:));
+    button.frame = NSMakeRect(cardWidth - 16 - 92, 11, 92, 22);
+    [button setContentTintColor:[NSColor systemRedColor]];
+    button.layer.borderColor = [[NSColor systemRedColor] colorWithAlphaComponent:0.4].CGColor;
+    [card addSubview:button];
+}
+
+static void buildPassPane(void) {
+    NSView *content = gSettingsContent;
+    if (!content) return;
+    CGFloat cw = content.bounds.size.width;
+    CGFloat padX = 40.0;
+    CGFloat y = content.bounds.size.height - 30.0;
+    addPaneHeader(content, padX, cw, &y, @"Pass", @"A prepaid balance for shared-key access. No BYOK required.");
+    addPassStatusCard(content, padX, cw, y);
+    y -= 96 + 14;
+    addPassKeyCard(content, padX, cw, y);
+    y -= 44 + 14;
     if (gLastPassActive) {
-        NSView *card3 = addCard(content, padX, cw, y, 44);
-        CGFloat cw3 = card3.bounds.size.width;
-        [card3 addSubview:makeLabel(NSMakeRect(16, 13, 180, 18), @"Deactivate this Pass")];
-        NSButton *removeBtn = makePillButton(@"Remove Pass", 0, @selector(onRemovePass:));
-        removeBtn.frame = NSMakeRect(cw3 - 16 - 92, 11, 92, 22);
-        [removeBtn setContentTintColor:[NSColor systemRedColor]];
-        removeBtn.layer.borderColor = [[NSColor systemRedColor] colorWithAlphaComponent:0.4].CGColor;
-        [card3 addSubview:removeBtn];
+        addDeactivatePassCard(content, padX, cw, y);
         y -= 44 + 14;
     }
-
     addSaveButton(content, padX, cw, &y);
 }
 
@@ -2375,7 +2719,8 @@ static void buildHotkeysPane(void) {
     addPaneHeader(content, padX, cw, &y, @"Hotkeys", @"Global while Hermes is running. Not editable in this preview.");
 
     NSArray<NSArray<NSString *> *> *rows = @[
-        @[@"Capture", @"⌘H"], @[@"Send", @"⌘⏎"],
+        @[@"Discussion mode", @"⌘D"], @[@"Ask questions", @"⌘A"],
+        @[@"Capture", @"⌘H"], @[@"Reselect capture", @"⌘⇧H"], @[@"Send", @"⌘⏎"],
         @[@"Auto-type", @"⌘T"], @[@"Listen", @"⌘L"],
         @[@"Pin reference", @"⌘P"], @[@"Cancel / abort", @"ESC"],
     ];
@@ -2453,50 +2798,96 @@ static void buildAboutPane(void) {
     [content addSubview:btn];
 }
 
-static void showSettingsPane(SettingsPane pane) {
-    if (!gSettingsContent) return;
+static void resetSettingsPaneControls(void) {
     for (NSView *v in gSettingsContent.subviews) [v removeFromSuperview];
     gSetAPIKey = nil; gSetProvider = nil; gSetModel = nil; gSetModelTag = nil;
     gSetStealth = nil; gSetHumanise = nil; gSetDelay = nil; gSetResume = nil;
     gSetLocale = nil; gSetPassKey = nil; gSetOpacity = nil; gOpacityLabel = nil;
     gUpdatesLabel = nil; gUpdatesDot = nil;
+}
+
+static void activateSidebarPane(SettingsPane pane) {
     for (HermesNavRow *btn in gSidebarRows) {
         [btn setActiveRow:(btn.tag == pane)];
     }
-    switch (pane) {
-        case SettingsPaneGeneral: buildGeneralPane(); break;
-        case SettingsPaneProvider: buildProviderPane(); break;
-        case SettingsPanePass: buildPassPane(); break;
-        case SettingsPaneResume: buildResumePane(); break;
-        case SettingsPaneSpeech: buildSpeechPane(); break;
-        case SettingsPaneHotkeys: buildHotkeysPane(); break;
-        case SettingsPaneAbout: buildAboutPane(); break;
-    }
+}
+
+static BOOL validSettingsPane(SettingsPane pane) {
+    return pane >= SettingsPaneGeneral && pane <= SettingsPaneAbout;
+}
+
+static void showSettingsPane(SettingsPane pane) {
+    if (!gSettingsContent) return;
+    resetSettingsPaneControls();
+    activateSidebarPane(pane);
+    static void (*builders[])(void) = {
+        buildGeneralPane, buildProviderPane, buildPassPane, buildResumePane,
+        buildSpeechPane, buildHotkeysPane, buildAboutPane
+    };
+    if (validSettingsPane(pane)) builders[pane]();
 }
 
 // applyUpdateStatus paints the cached gUpdateStatus onto the Updates row.
 // Cached (rather than re-fetched) because the async check may complete after
 // the user has navigated to a different pane and torn the row's views down.
+static void applyCheckingStatus(void) {
+    [gUpdatesLabel setStringValue:@"Checking for updates..."];
+    gUpdatesDot.layer.backgroundColor = hTextFaint().CGColor;
+}
+
+static void applyCurrentStatus(void) {
+    [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"You're on the latest version · v%@", HERMES_VERSION]];
+    gUpdatesDot.layer.backgroundColor = hGood().CGColor;
+}
+
+static void applyAvailableStatus(void) {
+    [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"Update available · v%@", nsOrEmpty(gUpdateLatestTag)]];
+    gUpdatesDot.layer.backgroundColor = hTextMuted().CGColor;
+}
+
+static void applyFailedStatus(void) {
+    [gUpdatesLabel setStringValue:@"Update check failed"];
+    gUpdatesDot.layer.backgroundColor = hBad().CGColor;
+}
+
 static void applyUpdateStatus(void) {
     if (!gUpdatesLabel || !gUpdatesDot) return;
-    switch (gUpdateStatus) {
-        case UpdateStatusChecking:
-            [gUpdatesLabel setStringValue:@"Checking for updates..."];
-            gUpdatesDot.layer.backgroundColor = hTextFaint().CGColor;
-            break;
-        case UpdateStatusUpToDate:
-            [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"You're on the latest version · v%@", HERMES_VERSION]];
-            gUpdatesDot.layer.backgroundColor = hGood().CGColor;
-            break;
-        case UpdateStatusAvailable:
-            [gUpdatesLabel setStringValue:[NSString stringWithFormat:@"Update available · v%@", nsOrEmpty(gUpdateLatestTag)]];
-            gUpdatesDot.layer.backgroundColor = hTextMuted().CGColor;
-            break;
-        case UpdateStatusFailed:
-            [gUpdatesLabel setStringValue:@"Update check failed"];
-            gUpdatesDot.layer.backgroundColor = hBad().CGColor;
-            break;
+    static void (*appliers[])(void) = {
+        applyCheckingStatus, applyCurrentStatus, applyAvailableStatus, applyFailedStatus
+    };
+    appliers[gUpdateStatus]();
+}
+
+static NSString *releaseTag(NSData *data, NSError *error) {
+    if (error || !data) return nil;
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![object isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *rawTag = object[@"tag_name"];
+    if (![rawTag isKindOfClass:[NSString class]]) return nil;
+    return [rawTag stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"vV"]];
+}
+
+static void storeUpdateTag(NSString *tag) {
+    if (tag.length == 0) {
+        gUpdateStatus = UpdateStatusFailed;
+        return;
     }
+    if ([tag isEqualToString:HERMES_VERSION]) {
+        gUpdateStatus = UpdateStatusUpToDate;
+        return;
+    }
+    gUpdateStatus = UpdateStatusAvailable;
+    [gUpdateLatestTag release];
+    gUpdateLatestTag = [tag retain];
+}
+
+static void refreshVisibleUpdateStatus(void) {
+    if (gUpdatesLabel && gUpdatesLabel.superview) applyUpdateStatus();
+}
+
+static void handleUpdateResponse(NSData *data, NSError *error) {
+    storeUpdateTag(releaseTag(data, error));
+    refreshVisibleUpdateStatus();
 }
 
 static void checkForUpdates(void) {
@@ -2506,50 +2897,67 @@ static void checkForUpdates(void) {
     NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:url]
                                         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *tag = nil;
-            if (!error && data) {
-                NSError *jsonErr = nil;
-                id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonErr];
-                if ([obj isKindOfClass:[NSDictionary class]]) {
-                    NSString *rawTag = obj[@"tag_name"];
-                    if ([rawTag isKindOfClass:[NSString class]]) {
-                        tag = [rawTag stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"vV"]];
-                    }
-                }
-            }
-            if (tag.length == 0) {
-                gUpdateStatus = UpdateStatusFailed;
-            } else if ([tag isEqualToString:HERMES_VERSION]) {
-                gUpdateStatus = UpdateStatusUpToDate;
-            } else {
-                gUpdateStatus = UpdateStatusAvailable;
-                [gUpdateLatestTag release];
-                gUpdateLatestTag = [tag retain];
-            }
-            // Only touch the label/dot if the General pane is still on screen;
-            // otherwise the views were already torn down by showSettingsPane.
-            if (gUpdatesLabel && gUpdatesLabel.superview) {
-                applyUpdateStatus();
-            }
+            handleUpdateResponse(data, error);
         });
     }];
     [task resume];
 }
 
+static NSString *utf8StringOrDefault(const char *value, const char *fallback) {
+    if (!value) value = fallback;
+    return [NSString stringWithUTF8String:value];
+}
+
+static NSDictionary *settingsPayload(const char *json) {
+    NSString *text = utf8StringOrDefault(json, "{}");
+    NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![parsed isKindOfClass:[NSDictionary class]]) return @{};
+    return parsed;
+}
+
+static void replaceRetainedString(NSString **target, NSString *value) {
+    if (*target == value) return;
+    [*target release];
+    *target = [value retain];
+}
+
+static void prepareSettingsGlobals(NSDictionary *payload) {
+    if (gSettingsPayload != payload) {
+        [gSettingsPayload release];
+        gSettingsPayload = [payload retain];
+    }
+    if (!gModelNames) gModelNames = [[NSMutableArray alloc] init];
+    if (!gFieldSync) gFieldSync = [[HermesFieldSync alloc] init];
+    if (!gSettingsDelegate) gSettingsDelegate = [[HermesSettingsDelegate alloc] init];
+}
+
+static CGFloat settingsWindowY(NSRect barFrame, CGFloat settingsHeight) {
+    CGFloat y = barFrame.origin.y - settingsHeight - 39.0;
+    if (y < 0.0) return barFrame.origin.y + kBarHeight + 4.0;
+    return y;
+}
+
+static NSColor *stealthStatusColor(bool stealth) {
+    if (stealth) return hGood();
+    return hTextFaint();
+}
+
+static NSString *stealthStatusText(bool stealth) {
+    if (stealth) return @"Stealth active";
+    return @"Stealth off";
+}
+
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON,
                                bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale,
                                const char *passKey, bool passActive, int passPct, int opacity, int fontSize) {
-    NSString *nsApiKey = [NSString stringWithUTF8String:apiKey ?: ""];
-    NSString *nsProvider = [NSString stringWithUTF8String:provider ?: "Groq"];
-    NSString *nsModel = [NSString stringWithUTF8String:model ?: ""];
-    NSString *nsResume = [NSString stringWithUTF8String:resumeProfile ?: ""];
-    NSString *nsLocale = [NSString stringWithUTF8String:speechLocale ?: "en-US"];
-    NSString *nsPassKey = [NSString stringWithUTF8String:passKey ?: ""];
-    NSString *nsSettingsJSON = [NSString stringWithUTF8String:settingsJSON ?: "{}"];
-    NSData *jsonData = [nsSettingsJSON dataUsingEncoding:NSUTF8StringEncoding];
-    NSError *jsonErr = nil;
-    id parsed = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonErr];
-    NSDictionary *payload = [parsed isKindOfClass:[NSDictionary class]] ? parsed : @{};
+    NSString *nsApiKey = utf8StringOrDefault(apiKey, "");
+    NSString *nsProvider = utf8StringOrDefault(provider, "Groq");
+    NSString *nsModel = utf8StringOrDefault(model, "");
+    NSString *nsResume = utf8StringOrDefault(resumeProfile, "");
+    NSString *nsLocale = utf8StringOrDefault(speechLocale, "en-US");
+    NSString *nsPassKey = utf8StringOrDefault(passKey, "");
+    NSDictionary *payload = settingsPayload(settingsJSON);
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (gSettingsWindow) {
@@ -2557,20 +2965,13 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
             return;
         }
 
-        if (gSettingsPayload != payload) {
-            [gSettingsPayload release];
-            gSettingsPayload = [payload retain];
-        }
-        if (!gModelNames) {
-            gModelNames = [[NSMutableArray alloc] init];
-        }
-
-        if (gLastApiKey != nsApiKey) { [gLastApiKey release]; gLastApiKey = [nsApiKey retain]; }
-        if (gLastProvider != nsProvider) { [gLastProvider release]; gLastProvider = [nsProvider retain]; }
-        if (gLastModel != nsModel) { [gLastModel release]; gLastModel = [nsModel retain]; }
-        if (gLastResume != nsResume) { [gLastResume release]; gLastResume = [nsResume retain]; }
-        if (gLastLocale != nsLocale) { [gLastLocale release]; gLastLocale = [nsLocale retain]; }
-        if (gLastPassKey != nsPassKey) { [gLastPassKey release]; gLastPassKey = [nsPassKey retain]; }
+        prepareSettingsGlobals(payload);
+        replaceRetainedString(&gLastApiKey, nsApiKey);
+        replaceRetainedString(&gLastProvider, nsProvider);
+        replaceRetainedString(&gLastModel, nsModel);
+        replaceRetainedString(&gLastResume, nsResume);
+        replaceRetainedString(&gLastLocale, nsLocale);
+        replaceRetainedString(&gLastPassKey, nsPassKey);
         gLastStealth = stealth;
         gLastHumanise = humanise;
         gLastDelayMs = delayMs;
@@ -2581,19 +2982,12 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
         gUpdateStatus = UpdateStatusChecking;
         gSettingsDirty = NO;
 
-        if (!gFieldSync) {
-            gFieldSync = [[HermesFieldSync alloc] init];
-        }
-
         const CGFloat settingsW = 900.0;
         const CGFloat settingsH = 510.0;
         const CGFloat sidebarW = 212.0;
         NSRect barFrame = [gPanel frame];
         CGFloat sx = barFrame.origin.x - (settingsW - kBarWidth) / 2.0;
-        CGFloat sy = barFrame.origin.y - settingsH - 4.0 - 35.0;
-        if (sy < 0.0) {
-            sy = barFrame.origin.y + kBarHeight + 4.0;
-        }
+        CGFloat sy = settingsWindowY(barFrame, settingsH);
         NSRect frame = NSMakeRect(sx, sy, settingsW, settingsH);
         NSWindow *win = [[NSWindow alloc] initWithContentRect:frame
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskFullSizeContentView
@@ -2626,9 +3020,6 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
         [tint setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
         [root addSubview:tint];
 
-        if (!gSettingsDelegate) {
-            gSettingsDelegate = [[HermesSettingsDelegate alloc] init];
-        }
         [win setDelegate:gSettingsDelegate];
 
         NSView *sidebar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, sidebarW, settingsH)];
@@ -2657,10 +3048,10 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
         }
 
         NSView *footer = [[NSView alloc] initWithFrame:NSMakeRect(10, 14, sidebarW - 20, 16)];
-        NSView *stealthDot = makeStatusDot(stealth ? hGood() : hTextFaint(), 6);
+        NSView *stealthDot = makeStatusDot(stealthStatusColor(stealth), 6);
         stealthDot.frame = NSMakeRect(0, 5, 6, 6);
         [footer addSubview:stealthDot];
-        NSTextField *stealthLbl = makeDesc(NSMakeRect(11, 0, 100, 14), stealth ? @"Stealth active" : @"Stealth off");
+        NSTextField *stealthLbl = makeDesc(NSMakeRect(11, 0, 100, 14), stealthStatusText(stealth));
         [stealthLbl setFont:[NSFont systemFontOfSize:10]];
         [footer addSubview:stealthLbl];
         NSTextField *verLbl = makeDesc(NSMakeRect(sidebarW - 20 - 50, 0, 50, 14), [NSString stringWithFormat:@"v%@", HERMES_VERSION]);
@@ -2691,6 +3082,13 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
 - (void)onMic:(id)sender;
 - (void)onType:(id)sender;
 - (void)onTray:(id)sender;
+- (void)onDocumentContext:(id)sender;
+- (void)onDocumentUpload:(id)sender;
+- (void)onDocumentPaste:(id)sender;
+- (void)onDocumentClear:(id)sender;
+- (void)onDocumentClose:(id)sender;
+- (void)onDiscussionToggle:(id)sender;
+- (void)onAskQuestions:(id)sender;
 - (void)onHistoryEnter:(id)sender;
 - (void)onHistoryPrev:(id)sender;
 - (void)onHistoryNext:(id)sender;
@@ -2765,6 +3163,78 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     hermesOverlayOnTray();
 }
 
+- (void)onDocumentContext:(id)sender {
+    if (gContextWindow && [gContextWindow isVisible]) {
+        hideContextWindow();
+    } else {
+        showContextWindow();
+    }
+}
+
+static int addSelectedDocumentURLs(NSArray<NSURL *> *urls) {
+    int added = 0;
+    for (NSURL *url in urls) {
+        if (hermesOverlayOnDocumentFile((char *)[[url path] UTF8String])) added++;
+    }
+    return added;
+}
+
+static NSString *fileCountSuffix(int count) {
+    if (count == 1) return @"";
+    return @"s";
+}
+
+static void flashAddedDocuments(int added) {
+    if (added <= 0) return;
+    NSString *message = [NSString stringWithFormat:@"Added %d file%@ to context", added, fileCountSuffix(added)];
+    hermesOverlayFlash((char *)[message UTF8String]);
+}
+
+static void handleDocumentSelection(NSOpenPanel *panel, NSModalResponse result) {
+    if (result != NSModalResponseOK) return;
+    flashAddedDocuments(addSelectedDocumentURLs([panel URLs]));
+}
+
+- (void)onDocumentUpload:(id)sender {
+    if (!gContextWindow) return;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    [panel setCanChooseFiles:YES];
+    [panel setCanChooseDirectories:NO];
+    [panel setAllowsMultipleSelection:YES];
+    [panel setAllowedContentTypes:@[UTTypeText, UTTypeJSON]];
+    [panel setMessage:@"Choose UTF-8 text, source-code, Markdown, or JSON files to add to document context."];
+    [panel beginSheetModalForWindow:gContextWindow completionHandler:^(NSModalResponse result) {
+        handleDocumentSelection(panel, result);
+    }];
+}
+
+- (void)onDocumentPaste:(id)sender {
+    if (!gDocumentPaste) return;
+    NSString *value = [gDocumentPaste string] ?: @"";
+    if (hermesOverlayOnDocumentPaste((char *)[value UTF8String])) {
+        [gDocumentPaste setString:@""];
+        hermesOverlayFlash("Pasted context added");
+    }
+}
+
+- (void)onDocumentClear:(id)sender {
+    hermesOverlayOnDocumentClear();
+    if (gDocumentPaste) [gDocumentPaste setString:@""];
+    hermesOverlayFlash("Document context cleared");
+}
+
+- (void)onDocumentClose:(id)sender {
+    hideContextWindow();
+}
+
+- (void)onDiscussionToggle:(id)sender {
+    hermesOverlayOnDiscussionToggle();
+}
+
+- (void)onAskQuestions:(id)sender {
+    hermesOverlayOnAskQuestions();
+}
+
 - (void)onHistoryEnter:(id)sender {
     hermesOverlayOnHistoryEnter();
 }
@@ -2832,28 +3302,42 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
 - (void)onSettingsUpdatesClick:(id)sender {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:HERMES_RELEASES_URL]];
 }
+
+static NSString *storedProviderKey(NSString *provider) {
+    NSString *key = gSettingsPayload[@"keys"][provider];
+    if (![key isKindOfClass:[NSString class]]) return @"";
+    return key;
+}
+
+static void selectFirstProviderModel(void) {
+    if (gModelNames.count == 0) return;
+    replaceRetainedString(&gLastModel, gModelNames[0]);
+}
+
 - (void)onProviderChanged:(id)sender {
     NSString *provider = [[gSetProvider selectedItem] title];
-    if (gLastProvider != provider) { [gLastProvider release]; gLastProvider = [provider retain]; }
-    NSDictionary *keys = gSettingsPayload[@"keys"];
-    NSString *key = keys[provider];
-    if (![key isKindOfClass:[NSString class]]) key = @"";
+    replaceRetainedString(&gLastProvider, provider);
+    NSString *key = storedProviderKey(provider);
     [gSetAPIKey setStringValue:key];
-    if (gLastApiKey != key) { [gLastApiKey release]; gLastApiKey = [key retain]; }
+    replaceRetainedString(&gLastApiKey, key);
     populateModelPopup(provider, nil);
-    if (gModelNames.count > 0) {
-        NSString *first = gModelNames[0];
-        if (gLastModel != first) { [gLastModel release]; gLastModel = [first retain]; }
-    }
+    selectFirstProviderModel();
     updateModelTag();
     markSettingsDirty();
 }
+
+static NSString *selectedModelName(void) {
+    if (!gSetModel) return nil;
+    if (gModelNames.count == 0) return nil;
+    NSInteger index = [gSetModel indexOfSelectedItem];
+    if (index < 0 || index >= (NSInteger)gModelNames.count) return nil;
+    return gModelNames[index];
+}
+
 - (void)onModelChanged:(id)sender {
-    if (!gSetModel || gModelNames.count == 0) return;
-    NSInteger idx = [gSetModel indexOfSelectedItem];
-    if (idx < 0 || idx >= (NSInteger)gModelNames.count) return;
-    NSString *model = gModelNames[idx];
-    if (gLastModel != model) { [gLastModel release]; gLastModel = [model retain]; }
+    NSString *model = selectedModelName();
+    if (!model) return;
+    replaceRetainedString(&gLastModel, model);
     updateModelTag();
     markSettingsDirty();
 }
@@ -2879,19 +3363,34 @@ void hermesOverlayShowSettings(const char *apiKey, const char *provider, const c
     gLastHumanise = [(HermesToggle *)sender isOn];
     markSettingsDirty();
 }
+
+static NSTextField *editableSettingsField(NSButton *button) {
+    if (button.tag == 0) return gSetAPIKey;
+    return gSetPassKey;
+}
+
+static NSString *finishedEditTitle(NSButton *button) {
+    if (button.tag == 0) return @"Edit";
+    return @"Replace";
+}
+
+static void applyFieldEditing(NSButton *button, NSTextField *field, BOOL enabling) {
+    [field setEnabled:enabling];
+    if (enabling) {
+        [button setTitle:@"Done"];
+        [gSettingsWindow makeFirstResponder:field];
+        return;
+    }
+    [button setTitle:finishedEditTitle(button)];
+}
+
 - (void)onFieldEditToggle:(id)sender {
     if (![sender isKindOfClass:[NSButton class]]) return;
     NSButton *btn = (NSButton *)sender;
-    NSTextField *field = (btn.tag == 0) ? gSetAPIKey : gSetPassKey;
+    NSTextField *field = editableSettingsField(btn);
     if (!field) return;
     BOOL enabling = ![field isEnabled];
-    [field setEnabled:enabling];
-    if (enabling) {
-        [btn setTitle:@"Done"];
-        [gSettingsWindow makeFirstResponder:field];
-    } else {
-        [btn setTitle:(btn.tag == 0) ? @"Edit" : @"Replace"];
-    }
+    applyFieldEditing(btn, field, enabling);
 }
 
 - (void)onRemovePass:(id)sender {

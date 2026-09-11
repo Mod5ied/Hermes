@@ -35,11 +35,13 @@ bundle: build
 	cp $(APP) $(BUNDLE)/Contents/MacOS/
 	cp Info.plist $(BUNDLE)/Contents/
 	cp assets/AppIcon.icns $(BUNDLE)/Contents/Resources/
-	@if [ -f "$(CERT_KEYCHAIN)" ]; then \
+	cp scripts/install-native-host.sh $(BUNDLE)/Contents/Resources/
+	chmod +x $(BUNDLE)/Contents/Resources/install-native-host.sh
+	@if [ -f "$(CERT_KEYCHAIN)" ] && security find-identity -v -p codesigning "$(CERT_KEYCHAIN)" 2>/dev/null | grep -q '"$(CERT_NAME)"'; then \
 		echo "Signing with '$(CERT_NAME)' ..."; \
 		codesign --force --deep --keychain "$(CERT_KEYCHAIN)" --sign "$(CERT_NAME)" $(BUNDLE); \
 	else \
-		echo "WARNING: No $(CERT_KEYCHAIN) found; using ad-hoc signature."; \
+		echo "WARNING: No usable '$(CERT_NAME)' identity found; using ad-hoc signature."; \
 		echo "         macOS permissions may need to be reset after each rebuild."; \
 		echo "         Run 'make cert' to create a self-signed certificate for stable grants."; \
 		codesign --force --deep --sign "-" $(BUNDLE); \

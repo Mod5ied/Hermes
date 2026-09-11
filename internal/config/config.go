@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -30,10 +31,14 @@ var ProviderModels = map[string][]ModelInfo{
 		{Name: "meta-llama/llama-4-scout-17b-16e-instruct", Vision: true},
 	},
 	ProviderCerebras: {
-		{Name: "gemma-4-31b", Vision: true},
 		{Name: "gpt-oss-120b", Vision: false},
-		{Name: "zai-glm-4.7", Vision: false},
+		{Name: "qwen-3.8-27b", Vision: true},
 	},
+}
+
+var deprecatedCerebrasModels = map[string]string{
+	"gemma-4-31b": "qwen-3.8-27b",
+	"zai-glm-4.7": "gpt-oss-120b",
 }
 
 // ProviderBaseURLs maps each provider to its API endpoint.
@@ -71,15 +76,15 @@ type Rect struct {
 
 // Config holds all user settings and runtime state.
 type Config struct {
-	APIKey        string            `json:"api_key"`
-	APIKeys       map[string]string `json:"provider_api_keys,omitempty"`
-	BaseURL       string            `json:"base_url"`
-	Model         string            `json:"model"`
-	Provider      string            `json:"provider"`
-	Stealth       bool              `json:"stealth"`
-	Humanise      bool              `json:"humanise"`
-	BaseDelay     time.Duration     `json:"base_delay_ms"`
-	Region        *Rect             `json:"region,omitempty"`
+	APIKey         string            `json:"api_key"`
+	APIKeys        map[string]string `json:"provider_api_keys,omitempty"`
+	BaseURL        string            `json:"base_url"`
+	Model          string            `json:"model"`
+	Provider       string            `json:"provider"`
+	Stealth        bool              `json:"stealth"`
+	Humanise       bool              `json:"humanise"`
+	BaseDelay      time.Duration     `json:"base_delay_ms"`
+	Region         *Rect             `json:"region,omitempty"`
 	ContextTurns   int               `json:"context_turns"`
 	ImageWindow    int               `json:"image_window"`
 	SpeechLocale   string            `json:"speech_locale"`
@@ -93,12 +98,12 @@ type Config struct {
 // Default returns a Config populated with defaults.
 func Default() Config {
 	return Config{
-		BaseURL:      DefaultBase,
-		Model:        ProviderModels[ProviderGroq][0].Name,
-		Provider:     ProviderGroq,
-		Stealth:      true,
-		Humanise:     true,
-		BaseDelay:    90 * time.Millisecond,
+		BaseURL:        DefaultBase,
+		Model:          ProviderModels[ProviderGroq][0].Name,
+		Provider:       ProviderGroq,
+		Stealth:        true,
+		Humanise:       true,
+		BaseDelay:      90 * time.Millisecond,
 		ContextTurns:   4,
 		ImageWindow:    1,
 		SpeechLocale:   "",
@@ -111,26 +116,32 @@ func Default() Config {
 // ApplyProviderDefaults sets BaseURL and Model from the configured provider and
 // keeps the active API key in sync with the per-provider key store.
 func ApplyProviderDefaults(c *Config) {
-	if c.Provider == "" {
-		c.Provider = ProviderGroq
-	}
-	if _, ok := ProviderBaseURLs[c.Provider]; !ok {
-		c.Provider = ProviderGroq
-	}
-
+	c.Provider = supportedProvider(c.Provider)
 	c.BaseURL = ProviderBaseURLs[c.Provider]
-
-	// If the current model does not belong to this provider, reset to the default.
+	if c.Provider == ProviderCerebras {
+		if replacement, ok := deprecatedCerebrasModels[c.Model]; ok {
+			c.Model = replacement
+		}
+	}
 	if !modelExists(c.Provider, c.Model) {
 		c.Model = DefaultModel(c.Provider)
 	}
-
-	// Restore the stored key for this provider, if any.
-	if c.APIKeys == nil {
-		c.APIKeys = map[string]string{}
-	}
+	ensureAPIKeys(c)
 	if key, ok := c.APIKeys[c.Provider]; ok && key != "" {
 		c.APIKey = key
+	}
+}
+
+func supportedProvider(provider string) string {
+	if _, ok := ProviderBaseURLs[provider]; ok {
+		return provider
+	}
+	return ProviderGroq
+}
+
+func ensureAPIKeys(c *Config) {
+	if c.APIKeys == nil {
+		c.APIKeys = map[string]string{}
 	}
 }
 
@@ -145,6 +156,13 @@ func modelExists(provider, model string) bool {
 
 // Dir returns the application's support directory.
 func Dir() (string, error) {
+	if runtime.GOOS == "windows" {
+		root, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("user config dir: %w", err)
+		}
+		return filepath.Join(root, AppDirName), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("user home dir: %w", err)
@@ -166,27 +184,46 @@ func Path() (string, error) {
 // may be overridden by the HERMES_GROQ_API_KEY environment variable.
 func Load() (Config, error) {
 	cfg := Default()
-
 	path, err := Path()
 	if err != nil {
 		return cfg, err
 	}
-
-	data, err := os.ReadFile(path)
+	data, missing, err := readConfig(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			if key := os.Getenv(APIKeyEnv); key != "" {
-				cfg.APIKey = key
-			}
-			return cfg, nil
-		}
-		return cfg, fmt.Errorf("read config: %w", err)
+		return cfg, err
 	}
-
+	if missing {
+		applyEnvironmentKey(&cfg)
+		return cfg, nil
+	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
+	normalizeLoaded(&cfg)
+	applyEnvironmentKey(&cfg)
+	return cfg, nil
+}
 
+func readConfig(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read config: %w", err)
+	}
+	return data, false, nil
+}
+
+func normalizeLoaded(cfg *Config) {
+	applyLegacyDefaults(cfg)
+	migrateAPIKey(cfg)
+	ApplyProviderDefaults(cfg)
+	clampContextSettings(cfg)
+	clampDisplaySettings(cfg)
+}
+
+func applyLegacyDefaults(cfg *Config) {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBase
 	}
@@ -196,24 +233,25 @@ func Load() (Config, error) {
 	if cfg.Provider == "" {
 		cfg.Provider = ProviderGroq
 	}
+}
 
-	// Migrate the legacy single API key into the per-provider map.
-	if cfg.APIKeys == nil {
-		cfg.APIKeys = map[string]string{}
+func migrateAPIKey(cfg *Config) {
+	ensureAPIKeys(cfg)
+	if _, exists := cfg.APIKeys[cfg.Provider]; cfg.APIKey != "" && !exists {
+		cfg.APIKeys[cfg.Provider] = cfg.APIKey
 	}
-	if cfg.APIKey != "" {
-		if _, ok := cfg.APIKeys[cfg.Provider]; !ok {
-			cfg.APIKeys[cfg.Provider] = cfg.APIKey
-		}
-	}
+}
 
-	ApplyProviderDefaults(&cfg)
+func clampContextSettings(cfg *Config) {
 	if cfg.ContextTurns <= 0 {
 		cfg.ContextTurns = 4
 	}
 	if cfg.ImageWindow < 0 || cfg.ImageWindow > 5 {
 		cfg.ImageWindow = 1
 	}
+}
+
+func clampDisplaySettings(cfg *Config) {
 	if cfg.OverlayOpacity < 20 {
 		cfg.OverlayOpacity = 20
 	}
@@ -226,12 +264,12 @@ func Load() (Config, error) {
 	if cfg.AnswerFontSize > 16 {
 		cfg.AnswerFontSize = 16
 	}
+}
 
+func applyEnvironmentKey(cfg *Config) {
 	if key := os.Getenv(APIKeyEnv); key != "" {
 		cfg.APIKey = key
 	}
-
-	return cfg, nil
 }
 
 // Save writes the config file atomically with restrictive permissions.
@@ -240,18 +278,17 @@ func Save(c Config) error {
 	if err != nil {
 		return err
 	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
+	return writeAtomic(path, data)
+}
 
-	// Write to a temporary file and rename for atomicity.
+func writeAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("write config temp: %w", err)

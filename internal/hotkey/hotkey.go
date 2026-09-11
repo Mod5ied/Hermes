@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package hotkey registers global system hotkeys.
 package hotkey
 
@@ -10,16 +12,19 @@ import (
 
 // Combo names supported by Register.
 const (
-	Capture      = "cmd+h"
-	Send         = "cmd+enter"
-	TypeAnswer   = "cmd+t"
-	ToggleListen = "cmd+l"
-	PinToggle    = "cmd+p"
-	Cancel       = "esc"
-	MoveLeft     = "cmd+left"
-	MoveRight    = "cmd+right"
-	MoveUp       = "cmd+up"
-	MoveDown     = "cmd+down"
+	Capture         = "cmd+h"
+	ReselectCapture = "cmd+shift+h"
+	Discussion      = "cmd+d"
+	AskQuestions    = "cmd+a"
+	Send            = "cmd+enter"
+	TypeAnswer      = "cmd+t"
+	ToggleListen    = "cmd+l"
+	PinToggle       = "cmd+p"
+	Cancel          = "esc"
+	MoveLeft        = "cmd+left"
+	MoveRight       = "cmd+right"
+	MoveUp          = "cmd+up"
+	MoveDown        = "cmd+down"
 )
 
 // Register registers a global hotkey for the given combo and calls fn when pressed.
@@ -36,18 +41,7 @@ func Register(combo string, fn func()) (func(), error) {
 	}
 
 	quit := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-quit:
-				return
-			case <-hk.Keydown():
-				if fn != nil {
-					fn()
-				}
-			}
-		}
-	}()
+	go listen(hk, quit, fn)
 
 	unregister := func() {
 		close(quit)
@@ -56,47 +50,59 @@ func Register(combo string, fn func()) (func(), error) {
 	return unregister, nil
 }
 
+func listen(hk *hotkey.Hotkey, quit <-chan struct{}, fn func()) {
+	for {
+		select {
+		case <-quit:
+			return
+		case <-hk.Keydown():
+			call(fn)
+		}
+	}
+}
+
+func call(fn func()) {
+	if fn != nil {
+		fn()
+	}
+}
+
+var modifierNames = map[string]hotkey.Modifier{
+	"cmd": hotkey.ModCmd, "command": hotkey.ModCmd, "meta": hotkey.ModCmd,
+	"shift": hotkey.ModShift,
+	"alt":   hotkey.ModOption, "option": hotkey.ModOption,
+	"ctrl": hotkey.ModCtrl, "control": hotkey.ModCtrl,
+}
+
+var keyNames = map[string]hotkey.Key{
+	"enter": hotkey.KeyReturn, "return": hotkey.KeyReturn,
+	"esc": hotkey.KeyEscape, "escape": hotkey.KeyEscape,
+	"a": hotkey.KeyA, "d": hotkey.KeyD, "h": hotkey.KeyH, "t": hotkey.KeyT,
+	"l": hotkey.KeyL, "p": hotkey.KeyP,
+	"left": hotkey.KeyLeft, "right": hotkey.KeyRight,
+	"up": hotkey.KeyUp, "down": hotkey.KeyDown,
+}
+
 func parseCombo(combo string) ([]hotkey.Modifier, hotkey.Key, error) {
 	parts := strings.Split(strings.ToLower(combo), "+")
 	var mods []hotkey.Modifier
 	var key hotkey.Key
+	foundKey := false
 
 	for _, p := range parts {
-		switch p {
-		case "cmd", "command", "meta":
-			mods = append(mods, hotkey.ModCmd)
-		case "shift":
-			mods = append(mods, hotkey.ModShift)
-		case "alt", "option":
-			mods = append(mods, hotkey.ModOption)
-		case "ctrl", "control":
-			mods = append(mods, hotkey.ModCtrl)
-		case "enter", "return":
-			key = hotkey.KeyReturn
-		case "esc", "escape":
-			key = hotkey.KeyEscape
-		case "h":
-			key = hotkey.KeyH
-		case "t":
-			key = hotkey.KeyT
-		case "l":
-			key = hotkey.KeyL
-		case "p":
-			key = hotkey.KeyP
-		case "left":
-			key = hotkey.KeyLeft
-		case "right":
-			key = hotkey.KeyRight
-		case "up":
-			key = hotkey.KeyUp
-		case "down":
-			key = hotkey.KeyDown
-		default:
+		if mod, ok := modifierNames[p]; ok {
+			mods = append(mods, mod)
+			continue
+		}
+		var ok bool
+		key, ok = keyNames[p]
+		if !ok {
 			return nil, 0, fmt.Errorf("unknown combo part: %s", p)
 		}
+		foundKey = true
 	}
 
-	if key == 0 {
+	if !foundKey {
 		return nil, 0, fmt.Errorf("no key in combo: %s", combo)
 	}
 	return mods, key, nil

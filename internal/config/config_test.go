@@ -21,6 +21,25 @@ func TestDefault(t *testing.T) {
 	assert.Equal(t, 1, cfg.ImageWindow)
 }
 
+func TestCerebrasModelsContainOnlySupportedOptions(t *testing.T) {
+	assert.Equal(t, []ModelInfo{
+		{Name: "gpt-oss-120b", Vision: false},
+		{Name: "qwen-3.8-27b", Vision: true},
+	}, ProviderModels[ProviderCerebras])
+}
+
+func TestApplyProviderDefaultsMigratesDeprecatedCerebrasModels(t *testing.T) {
+	tests := map[string]string{
+		"gemma-4-31b": "qwen-3.8-27b",
+		"zai-glm-4.7": "gpt-oss-120b",
+	}
+	for old, want := range tests {
+		cfg := Config{Provider: ProviderCerebras, Model: old}
+		ApplyProviderDefaults(&cfg)
+		assert.Equal(t, want, cfg.Model)
+	}
+}
+
 func TestLoadSave(t *testing.T) {
 	tmp := t.TempDir()
 	orig := os.Getenv("HOME")

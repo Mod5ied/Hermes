@@ -1,3 +1,5 @@
+//go:build darwin && cgo
+
 package permissions
 
 // #cgo LDFLAGS: -framework Cocoa -framework ApplicationServices -framework Speech

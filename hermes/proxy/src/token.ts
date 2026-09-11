@@ -18,14 +18,25 @@ export async function signToken(passId: string, ttlSec: number, secret: string):
 }
 
 export async function verifyToken(token: string, secret: string): Promise<string | null> {
-  const [payload, sig] = token.split(".");
-  if (!payload || !sig) return null;
-  const ok = await crypto.subtle.verify("HMAC", await hmacKey(secret),
-    fromB64url(sig), new TextEncoder().encode(payload));
-  if (!ok) return null;
-  const body = JSON.parse(new TextDecoder().decode(fromB64url(payload)));
-  if (!body.e || body.e < Math.floor(Date.now()/1000)) return null; // expired
-  return body.p as string;
+	const parts = signedTokenParts(token);
+	if (!parts) return null;
+	const [payload, sig] = parts;
+	const ok = await crypto.subtle.verify("HMAC", await hmacKey(secret),
+		fromB64url(sig), new TextEncoder().encode(payload));
+	if (!ok) return null;
+	const body = JSON.parse(new TextDecoder().decode(fromB64url(payload)));
+	if (tokenExpired(body)) return null;
+	return body.p as string;
+}
+
+function signedTokenParts(token: string): [string, string] | null {
+	const [payload, signature] = token.split(".");
+	if (!payload || !signature) return null;
+	return [payload, signature];
+}
+
+function tokenExpired(body: any): boolean {
+	return !body.e || body.e < Math.floor(Date.now() / 1000);
 }
 
 export async function sha256hex(s: string): Promise<string> {

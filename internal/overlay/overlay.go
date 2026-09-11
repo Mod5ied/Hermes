@@ -1,3 +1,5 @@
+//go:build darwin && cgo
+
 // Package overlay drives the native NSPanel command bar.
 package overlay
 
@@ -25,12 +27,15 @@ void hermesOverlaySetPassBalance(bool active, int pct);
 void hermesOverlaySetBusy(bool on);
 void hermesOverlaySetListening(bool on);
 void hermesOverlaySetTrayCount(int n);
+void hermesOverlaySetDocumentContext(int count, int bytes, const char *names);
+void hermesOverlaySetDiscussionMode(bool enabled);
 void hermesOverlayRefreshPassPane(bool active, int pct);
 void hermesOverlaySetAnswerCount(int n);
 void hermesOverlayCountdown(int seconds);
 void hermesOverlayCancelCountdown(void);
 void hermesOverlayFreeString(char *s);
 void hermesOverlayRun(void);
+void hermesOverlayQuit(void);
 void hermesOverlayShowSettings(const char *apiKey, const char *provider, const char *model, const char *settingsJSON, bool stealth, bool humanise, int delayMs, const char *resumeProfile, const char *speechLocale, const char *passKey, bool passActive, int passPct, int opacity, int fontSize);
 void hermesOverlaySetCaptureEnabled(bool enabled);
 void hermesOverlayHideSettings(void);
@@ -65,6 +70,8 @@ type Overlay interface {
 	SetBusy(on bool)
 	SetListening(on bool)
 	SetTrayCount(n int)
+	SetDocumentContext(count, bytes int, names string)
+	SetDiscussionMode(enabled bool)
 	SetAnswerCount(n int)
 	RefreshPassPane(active bool, pct int)
 	SetStealth(on bool)
@@ -80,6 +87,11 @@ type Overlay interface {
 	OnListenToggle(handler func(on bool))
 	OnSettings(handler func())
 	OnTray(handler func())
+	OnDocumentPaste(handler func(text string) error)
+	OnDocumentFile(handler func(path string) error)
+	OnDocumentClear(handler func())
+	OnDiscussionToggle(handler func())
+	OnAskQuestions(handler func())
 	OnType(handler func())
 	OnTypeReady(handler func())
 	OnSettingsSaved(handler func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string))
@@ -110,6 +122,11 @@ func Run() {
 	C.hermesOverlayRun()
 }
 
+// Quit ends the native application run loop.
+func Quit() {
+	C.hermesOverlayQuit()
+}
+
 // New creates the overlay from config.
 // Must be called on the main thread (the OS thread that will run [NSApp run]).
 func New(cfg config.Config) Overlay {
@@ -120,23 +137,28 @@ func New(cfg config.Config) Overlay {
 }
 
 type nativeOverlay struct {
-	onCapture      func()
-	onSend         func()
-	onNewSession   func()
-	onListenToggle func(bool)
-	onSettings     func()
-	onTray         func()
-	onType         func()
-	onTypeReady    func()
-	onSettingsSaved func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
-	onOpacityChanged func(pct int)
-	onFontSizeChanged func(pt int)
-	onResumeUpload func(path string) (string, error)
-	onHistoryEnter func()
-	onHistoryPrev  func()
-	onHistoryNext  func()
-	onPinToggle    func()
-	onHistoryExit  func()
+	onCapture          func()
+	onSend             func()
+	onNewSession       func()
+	onListenToggle     func(bool)
+	onSettings         func()
+	onTray             func()
+	onDocumentPaste    func(string) error
+	onDocumentFile     func(string) error
+	onDocumentClear    func()
+	onDiscussionToggle func()
+	onAskQuestions     func()
+	onType             func()
+	onTypeReady        func()
+	onSettingsSaved    func(apiKey, passKey, provider, model string, stealth, humanise bool, delay time.Duration, resumeProfile, speechLocale string)
+	onOpacityChanged   func(pct int)
+	onFontSizeChanged  func(pt int)
+	onResumeUpload     func(path string) (string, error)
+	onHistoryEnter     func()
+	onHistoryPrev      func()
+	onHistoryNext      func()
+	onPinToggle        func()
+	onHistoryExit      func()
 }
 
 func (o *nativeOverlay) BeginAnswer() {
@@ -198,6 +220,16 @@ func (o *nativeOverlay) SetTrayCount(n int) {
 	C.hermesOverlaySetTrayCount(C.int(n))
 }
 
+func (o *nativeOverlay) SetDocumentContext(count, bytes int, names string) {
+	cNames := C.CString(names)
+	defer C.free(unsafe.Pointer(cNames))
+	C.hermesOverlaySetDocumentContext(C.int(count), C.int(bytes), cNames)
+}
+
+func (o *nativeOverlay) SetDiscussionMode(enabled bool) {
+	C.hermesOverlaySetDiscussionMode(C.bool(enabled))
+}
+
 func (o *nativeOverlay) RefreshPassPane(active bool, pct int) {
 	C.hermesOverlayRefreshPassPane(C.bool(active), C.int(pct))
 }
@@ -254,6 +286,26 @@ func (o *nativeOverlay) OnSettings(handler func()) {
 
 func (o *nativeOverlay) OnTray(handler func()) {
 	o.onTray = handler
+}
+
+func (o *nativeOverlay) OnDocumentPaste(handler func(string) error) {
+	o.onDocumentPaste = handler
+}
+
+func (o *nativeOverlay) OnDocumentFile(handler func(string) error) {
+	o.onDocumentFile = handler
+}
+
+func (o *nativeOverlay) OnDocumentClear(handler func()) {
+	o.onDocumentClear = handler
+}
+
+func (o *nativeOverlay) OnDiscussionToggle(handler func()) {
+	o.onDiscussionToggle = handler
+}
+
+func (o *nativeOverlay) OnAskQuestions(handler func()) {
+	o.onAskQuestions = handler
 }
 
 func (o *nativeOverlay) OnType(handler func()) {
@@ -411,6 +463,51 @@ func hermesOverlayOnSettings() {
 func hermesOverlayOnTray() {
 	if currentOverlay != nil && currentOverlay.onTray != nil {
 		currentOverlay.onTray()
+	}
+}
+
+//export hermesOverlayOnDocumentPaste
+func hermesOverlayOnDocumentPaste(value *C.char) C.int {
+	if currentOverlay == nil || currentOverlay.onDocumentPaste == nil {
+		return 0
+	}
+	if err := currentOverlay.onDocumentPaste(C.GoString(value)); err != nil {
+		currentOverlay.Flash("Couldn't add context: " + err.Error())
+		return 0
+	}
+	return 1
+}
+
+//export hermesOverlayOnDocumentFile
+func hermesOverlayOnDocumentFile(path *C.char) C.int {
+	if currentOverlay == nil || currentOverlay.onDocumentFile == nil {
+		return 0
+	}
+	if err := currentOverlay.onDocumentFile(C.GoString(path)); err != nil {
+		currentOverlay.Flash("Couldn't add file: " + err.Error())
+		return 0
+	}
+	return 1
+}
+
+//export hermesOverlayOnDocumentClear
+func hermesOverlayOnDocumentClear() {
+	if currentOverlay != nil && currentOverlay.onDocumentClear != nil {
+		currentOverlay.onDocumentClear()
+	}
+}
+
+//export hermesOverlayOnDiscussionToggle
+func hermesOverlayOnDiscussionToggle() {
+	if currentOverlay != nil && currentOverlay.onDiscussionToggle != nil {
+		currentOverlay.onDiscussionToggle()
+	}
+}
+
+//export hermesOverlayOnAskQuestions
+func hermesOverlayOnAskQuestions() {
+	if currentOverlay != nil && currentOverlay.onAskQuestions != nil {
+		currentOverlay.onAskQuestions()
 	}
 }
 

@@ -30,43 +30,48 @@ func TestNewRoutesToProxyWhenPassActive(t *testing.T) {
 	assert.True(t, ok, "Pass active should route to proxy client")
 }
 
+type retryHandler struct{ calls int }
+
+func (h *retryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.calls++
+	if r.URL.Path == "/activate" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"token":"fresh-token","expires_in":86400,"balance_micros":4000000,"balance_pct":100}`))
+		return
+	}
+	if r.Header.Get("Authorization") == "Bearer expired-token" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+		return
+	}
+	if r.Header.Get("Authorization") == "Bearer fresh-token" {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"hermes\":{\"balance_pct\":99}}\n\ndata: [DONE]\n\n"))
+		return
+	}
+	w.WriteHeader(http.StatusForbidden)
+}
+
+func reactivateForTest(_ context.Context, workerURL string) (*pass.Activation, error) {
+	resp, err := http.Post(workerURL+"/activate", "application/json", strings.NewReader(`{"pass_key":"test-key"}`))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("activation failed")
+	}
+	return &pass.Activation{Token: "fresh-token", BalancePct: 100}, nil
+}
+
 func TestProxySolveReactivatesOn401AndRetriesOnce(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.URL.Path == "/activate" {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"token":"fresh-token","expires_in":86400,"balance_micros":4000000,"balance_pct":100}`))
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		if auth == "Bearer expired-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
-			return
-		}
-		if auth == "Bearer fresh-token" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"hermes\":{\"balance_pct\":99}}\n\ndata: [DONE]\n\n"))
-			return
-		}
-		w.WriteHeader(http.StatusForbidden)
-	}))
+	handler := &retryHandler{}
+	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	c := NewProxy(config.Config{WorkerURL: server.URL, Model: "meta-llama/llama-4-scout-17b-16e-instruct"}, nil)
 	c.(*proxyClient).tokenGetter = func() (string, error) { return "expired-token", nil }
-	c.(*proxyClient).reactivator = func(ctx context.Context, workerURL string) (*pass.Activation, error) {
-		resp, err := http.Post(workerURL+"/activate", "application/json", strings.NewReader(`{"pass_key":"test-key"}`))
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("activation failed")
-		}
-		return &pass.Activation{Token: "fresh-token", BalancePct: 100}, nil
-	}
+	c.(*proxyClient).reactivator = reactivateForTest
 
 	var got string
 	ans, _, err := c.Solve(context.Background(), []Message{}, func(delta string) {
@@ -75,7 +80,7 @@ func TestProxySolveReactivatesOn401AndRetriesOnce(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "hi", got)
 	assert.Equal(t, Sentence, ans.Type)
-	assert.Equal(t, 3, calls, "expected /v1/solve 401, /activate, /v1/solve success")
+	assert.Equal(t, 3, handler.calls, "expected /v1/solve 401, /activate, /v1/solve success")
 }
 
 func TestProxySolveReturns402Exhausted(t *testing.T) {
@@ -85,7 +90,7 @@ func TestProxySolveReturns402Exhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewProxy(config.Config{WorkerURL: server.URL, Model: "gemma-4-31b"}, nil)
+	c := NewProxy(config.Config{WorkerURL: server.URL, Model: "qwen-3.8-27b"}, nil)
 	c.(*proxyClient).tokenGetter = func() (string, error) { return "token", nil }
 
 	_, _, err := c.Solve(context.Background(), []Message{}, nil)
@@ -100,7 +105,7 @@ func TestProxySolveReturns403Revoked(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewProxy(config.Config{WorkerURL: server.URL, Model: "gemma-4-31b"}, nil)
+	c := NewProxy(config.Config{WorkerURL: server.URL, Model: "qwen-3.8-27b"}, nil)
 	c.(*proxyClient).tokenGetter = func() (string, error) { return "token", nil }
 
 	_, _, err := c.Solve(context.Background(), []Message{}, nil)

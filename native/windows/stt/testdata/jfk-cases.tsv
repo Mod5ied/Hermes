@@ -1,0 +1,1 @@
+./build/windows-stt/_deps/whisper_cpp-src/samples/jfk.wav	./native/windows/stt/testdata/jfk-reference.txt

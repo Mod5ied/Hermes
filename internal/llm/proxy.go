@@ -48,37 +48,42 @@ func (c *proxyClient) reactivate(ctx context.Context) (*pass.Activation, error) 
 
 func (c *proxyClient) Solve(ctx context.Context, messages []Message, onDelta func(text string)) (Answer, ratelimit.Snapshot, error) {
 	var snap ratelimit.Snapshot
-	body, err := c.buildBody(messages)
+	body, token, err := c.requestCredentials(messages)
 	if err != nil {
 		return Answer{}, snap, err
 	}
-
-	token, err := c.token()
-	if err != nil || token == "" {
-		return Answer{}, snap, fmt.Errorf("Hermes Pass not activated")
-	}
-
 	answer, err := c.solveOnce(ctx, token, body, onDelta)
 	if err == nil {
 		return answer, snap, nil
 	}
-
-	// 401 => silently re-activate once and retry.
-	if isUnauthorized(err) {
-		act, rerr := c.reactivate(ctx)
-		if rerr != nil {
-			return Answer{}, snap, fmt.Errorf("pass reactivation failed: %v", rerr)
-		}
-		if c.onBalance != nil {
-			c.onBalance(act.BalancePct)
-		}
-		answer, err = c.solveOnce(ctx, act.Token, body, onDelta)
-	}
-
-	if err != nil {
+	if !isUnauthorized(err) {
 		return Answer{}, snap, err
 	}
-	return answer, snap, nil
+	answer, err = c.reactivateAndRetry(ctx, body, onDelta)
+	return answer, snap, err
+}
+
+func (c *proxyClient) requestCredentials(messages []Message) ([]byte, string, error) {
+	body, err := c.buildBody(messages)
+	if err != nil {
+		return nil, "", err
+	}
+	token, err := c.token()
+	if err != nil || token == "" {
+		return nil, "", fmt.Errorf("Hermes Pass not activated")
+	}
+	return body, token, nil
+}
+
+func (c *proxyClient) reactivateAndRetry(ctx context.Context, body []byte, onDelta func(string)) (Answer, error) {
+	act, err := c.reactivate(ctx)
+	if err != nil {
+		return Answer{}, fmt.Errorf("pass reactivation failed: %v", err)
+	}
+	if c.onBalance != nil {
+		c.onBalance(act.BalancePct)
+	}
+	return c.solveOnce(ctx, act.Token, body, onDelta)
 }
 
 func (c *proxyClient) solveOnce(ctx context.Context, token string, body []byte, onDelta func(text string)) (Answer, error) {
@@ -94,26 +99,31 @@ func (c *proxyClient) solveOnce(ctx context.Context, token string, body []byte, 
 		return Answer{}, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return Answer{}, errUnauthorized{}
+	if err := proxyResponseError(resp); err != nil {
+		return Answer{}, err
 	}
-	if resp.StatusCode == http.StatusPaymentRequired {
-		return Answer{}, fmt.Errorf("Pass used up, top up to continue.")
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		return Answer{}, fmt.Errorf("This pass has been revoked.")
-	}
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		return Answer{}, fmt.Errorf("proxy returned %d: %s", resp.StatusCode, string(data))
-	}
-
 	var full strings.Builder
 	if err := c.stream(resp.Body, &full, onDelta); err != nil {
 		return Answer{}, err
 	}
 	return ParseAnswer(full.String()), nil
+}
+
+var proxyStatusErrors = map[int]error{
+	http.StatusUnauthorized:    errUnauthorized{},
+	http.StatusPaymentRequired: fmt.Errorf("Pass used up, top up to continue."),
+	http.StatusForbidden:       fmt.Errorf("This pass has been revoked."),
+}
+
+func proxyResponseError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if err, ok := proxyStatusErrors[resp.StatusCode]; ok {
+		return err
+	}
+	data, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("proxy returned %d: %s", resp.StatusCode, string(data))
 }
 
 func (c *proxyClient) buildBody(messages []Message) ([]byte, error) {
@@ -125,46 +135,43 @@ func (c *proxyClient) buildBody(messages []Message) ([]byte, error) {
 		"max_completion_tokens": 768,
 		"messages":              buildAPIMessages(messages),
 	}
+	if requestMode(messages) == DocumentMode {
+		req["temperature"] = 0.2
+		delete(req, "top_p")
+		req["max_completion_tokens"] = 8192
+		if supportsReasoningEffort(c.model) {
+			req["reasoning_effort"] = "high"
+		}
+	}
 	return json.Marshal(req)
 }
 
 func (c *proxyClient) stream(r io.Reader, full *strings.Builder, onDelta func(string)) error {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
+		chunk, done, ok := parseStreamLine(scanner.Text())
+		if done {
 			break
 		}
-		var chunk struct {
-			Hermes *struct {
-				BalancePct int `json:"balance_pct"`
-			} `json:"hermes"`
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if chunk.Hermes != nil && c.onBalance != nil {
-			c.onBalance(chunk.Hermes.BalancePct)
-			continue
-		}
-		if len(chunk.Choices) > 0 {
-			delta := chunk.Choices[0].Delta.Content
-			full.WriteString(delta)
-			if onDelta != nil {
-				onDelta(delta)
-			}
+		if ok {
+			c.consumeStreamChunk(chunk, full, onDelta)
 		}
 	}
 	return scanner.Err()
+}
+
+func (c *proxyClient) consumeStreamChunk(chunk streamChunk, full *strings.Builder, onDelta func(string)) {
+	if chunk.Hermes != nil {
+		c.reportBalance(chunk.Hermes.BalancePct)
+		return
+	}
+	emitChoice(chunk, full, onDelta)
+}
+
+func (c *proxyClient) reportBalance(balance int) {
+	if c.onBalance != nil {
+		c.onBalance(balance)
+	}
 }
 
 type errUnauthorized struct{}

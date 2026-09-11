@@ -1,3 +1,5 @@
+//go:build darwin && cgo
+
 // Package typer injects keystrokes using the native Peruzzi-style engine.
 package typer
 

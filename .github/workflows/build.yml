@@ -33,3 +33,49 @@ jobs:
         with:
           name: Hermes-app
           path: Hermes.app
+
+  windows-stt:
+    name: Build Windows AVX2 STT engine
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test Windows platform foundations
+        shell: pwsh
+        run: go test ./internal/capture ./internal/hotkey ./internal/permissions ./internal/speech ./internal/typer
+
+      - name: Build native STT DLL
+        shell: pwsh
+        run: ./scripts/build-windows-stt.ps1 -SkipModel
+
+      - name: Provision smoke-test model
+        shell: pwsh
+        run: ./scripts/setup-windows-stt.ps1 -Model base.en-q5_1
+
+      - name: Run native model/VAD/transcript smoke test
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          ./dist/windows/hermes-stt-bench.exe `
+            --model ./dist/windows/models/ggml-base.en-q5_1.bin `
+            --manifest ./native/windows/stt/testdata/jfk-cases.tsv `
+            --language en `
+            --threads 2 `
+            --repeat 2 `
+            --fast `
+            --max-wer 0.25
+
+      - name: Upload native STT artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-windows-stt-avx2
+          path: |
+            dist/windows/hermes-stt.dll
+            dist/windows/hermes-stt-bench.exe
+            dist/windows/hermes-stt-probe.exe

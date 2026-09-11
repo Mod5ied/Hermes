@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	serviceName   = "Hermes"
+	serviceName    = "Hermes"
 	passKeyAccount = "hermes-pass-key"
 	tokenAccount   = "hermes-pass-token"
 )
@@ -107,23 +107,28 @@ func callActivate(ctx context.Context, workerURL, passKey string) (*Activation, 
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("This pass has been revoked.")
+	if err := activationResponseError(resp); err != nil {
+		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		msg := readMessage(resp.Body)
-		if msg == "" {
-			msg = fmt.Sprintf("activation failed with status %d", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("%s", msg)
-	}
-
 	var act Activation
 	if err := json.NewDecoder(resp.Body).Decode(&act); err != nil {
 		return nil, fmt.Errorf("decode activation: %w", err)
 	}
 	return &act, nil
+}
+
+func activationResponseError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("This pass has been revoked.")
+	}
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	message := readMessage(resp.Body)
+	if message == "" {
+		message = fmt.Sprintf("activation failed with status %d", resp.StatusCode)
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func readMessage(r io.Reader) string {
@@ -135,10 +140,13 @@ func readMessage(r io.Reader) string {
 		Message string `json:"message"`
 		Error   string `json:"error"`
 	}
-	if json.Unmarshal(data, &m) == nil && m.Message != "" {
+	if json.Unmarshal(data, &m) != nil {
+		return string(bytes.TrimSpace(data))
+	}
+	if m.Message != "" {
 		return m.Message
 	}
-	if json.Unmarshal(data, &m) == nil && m.Error != "" {
+	if m.Error != "" {
 		return m.Error
 	}
 	return string(bytes.TrimSpace(data))

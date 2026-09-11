@@ -4,6 +4,7 @@ set -e
 ZIP_PATH="${1:-Hermes.app.zip}"
 INSTALL_DIR="${2:-/Applications}"
 APP_PATH="$INSTALL_DIR/Hermes.app"
+CHROME_EXTENSION_ID="${3:-${HERMES_CHROME_EXTENSION_ID:-jckcedeldkbfekgpnknlabjencclcfpc}}"
 
 if [ ! -f "$ZIP_PATH" ]; then
     echo "Error: $ZIP_PATH not found." >&2
@@ -34,12 +35,15 @@ echo "(This only clears the browser-download quarantine attribute; it does not b
 xattr -cr "$APP_PATH"
 codesign --force --deep --sign - "$APP_PATH"
 
+"$APP_PATH/Contents/Resources/install-native-host.sh" "$CHROME_EXTENSION_ID" "$APP_PATH/Contents/MacOS/hermes"
+
 echo ""
 echo "Verifying Gatekeeper assessment:"
 spctl -a -vvv "$APP_PATH" 2>&1 || true
 
 echo ""
 echo "Installed $APP_PATH"
+echo "Installed the Hermes Native Messaging host for Chrome, Edge, Chromium, and Firefox."
 echo ""
 echo "If this is a fresh install or Hermes was ad-hoc signed, reset macOS permissions:"
 echo "  tccutil reset Accessibility com.hermes.app"

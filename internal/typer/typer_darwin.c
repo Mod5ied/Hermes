@@ -4,48 +4,63 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-void hermes_type_string(const char *utf8, unsigned long delayMicros, volatile int *stopFlag) {
-    if (!utf8) return;
+typedef struct {
+    CFStringRef string;
+    UniChar *characters;
+    CFIndex length;
+    CGEventSourceRef source;
+} HermesTypingContext;
+
+static HermesTypingContext createTypingContext(const char *utf8) {
+    HermesTypingContext context = {0};
+    if (!utf8) return context;
 
     CFStringRef str = CFStringCreateWithCString(kCFAllocatorDefault, utf8, kCFStringEncodingUTF8);
-    if (!str) return;
+    if (!str) return context;
 
     CFIndex len = CFStringGetLength(str);
     if (len == 0) {
         CFRelease(str);
-        return;
+        return context;
     }
 
     UniChar *chars = (UniChar *)malloc(sizeof(UniChar) * (size_t)len);
     if (!chars) {
         CFRelease(str);
-        return;
+        return context;
     }
     CFStringGetCharacters(str, CFRangeMake(0, len), chars);
+    context.string = str;
+    context.characters = chars;
+    context.length = len;
+    context.source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    return context;
+}
 
-    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+static void typeCharacter(HermesTypingContext *context, CFIndex index, unsigned long delayMicros) {
+    CGEventRef down = CGEventCreateKeyboardEvent(context->source, (CGKeyCode)0, true);
+    CGEventRef up = CGEventCreateKeyboardEvent(context->source, (CGKeyCode)0, false);
+    CGEventKeyboardSetUnicodeString(down, 1, &context->characters[index]);
+    CGEventKeyboardSetUnicodeString(up, 1, &context->characters[index]);
+    CGEventPost(kCGHIDEventTap, down);
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(down);
+    CFRelease(up);
+    if (delayMicros > 0) usleep((useconds_t)delayMicros);
+}
 
-    for (CFIndex i = 0; i < len; i++) {
+static void releaseTypingContext(HermesTypingContext *context) {
+    CFRelease(context->source);
+    free(context->characters);
+    CFRelease(context->string);
+}
+
+void hermes_type_string(const char *utf8, unsigned long delayMicros, volatile int *stopFlag) {
+    HermesTypingContext context = createTypingContext(utf8);
+    if (!context.string) return;
+    for (CFIndex i = 0; i < context.length; i++) {
         if (stopFlag && *stopFlag) break;
-
-        CGEventRef down = CGEventCreateKeyboardEvent(source, (CGKeyCode)0, true);
-        CGEventRef up = CGEventCreateKeyboardEvent(source, (CGKeyCode)0, false);
-
-        CGEventKeyboardSetUnicodeString(down, 1, &chars[i]);
-        CGEventKeyboardSetUnicodeString(up, 1, &chars[i]);
-
-        CGEventPost(kCGHIDEventTap, down);
-        CGEventPost(kCGHIDEventTap, up);
-
-        CFRelease(down);
-        CFRelease(up);
-
-        if (delayMicros > 0) {
-            usleep((useconds_t)delayMicros);
-        }
+        typeCharacter(&context, i, delayMicros);
     }
-
-    CFRelease(source);
-    free(chars);
-    CFRelease(str);
+    releaseTypingContext(&context);
 }

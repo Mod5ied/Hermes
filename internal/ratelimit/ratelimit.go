@@ -125,39 +125,53 @@ func (t *Tracker) CanSend(estTokens int) (bool, time.Duration, string) {
 	now := time.Now()
 	t.trim(now)
 
-	// Cooldown from a 429 takes priority.
-	if now.Before(t.cooldownUntil) {
-		return false, t.cooldownUntil.Sub(now), "rate limit cooldown"
+	if blocked, wait, reason := t.cooldownBlock(now); blocked {
+		return false, wait, reason
 	}
-
-	// RPM window.
-	if len(t.sendTimes) >= t.limits.RPM {
-		oldest := t.sendTimes[0]
-		clearsIn := oldest.Add(time.Minute).Sub(now)
-		if clearsIn > 0 {
-			return false, clearsIn, "requests per minute limit"
-		}
+	if blocked, wait, reason := t.rpmBlock(now); blocked {
+		return false, wait, reason
 	}
-
-	// RPD header-based.
-	if t.lastSnapshot.RemainingRequests == 0 && t.lastSnapshot.ResetRequests > 0 {
-		expires := t.snapshotUpdated.Add(t.lastSnapshot.ResetRequests)
-		if now.Before(expires) {
-			return false, expires.Sub(now), "requests per day limit"
-		}
+	if blocked, wait, reason := t.requestBlock(now); blocked {
+		return false, wait, reason
 	}
-
-	// TPM header-based.
-	if t.lastSnapshot.RemainingTokens >= 0 && estTokens > t.lastSnapshot.RemainingTokens {
-		if t.lastSnapshot.ResetTokens > 0 {
-			expires := t.snapshotUpdated.Add(t.lastSnapshot.ResetTokens)
-			if now.Before(expires) {
-				return false, expires.Sub(now), "tokens per minute limit"
-			}
-		}
+	if blocked, wait, reason := t.tokenBlock(now, estTokens); blocked {
+		return false, wait, reason
 	}
-
 	return true, 0, ""
+}
+
+func (t *Tracker) cooldownBlock(now time.Time) (bool, time.Duration, string) {
+	return timedBlock(now, t.cooldownUntil, "rate limit cooldown")
+}
+
+func (t *Tracker) rpmBlock(now time.Time) (bool, time.Duration, string) {
+	if len(t.sendTimes) < t.limits.RPM {
+		return false, 0, ""
+	}
+	return timedBlock(now, t.sendTimes[0].Add(time.Minute), "requests per minute limit")
+}
+
+func (t *Tracker) requestBlock(now time.Time) (bool, time.Duration, string) {
+	if t.lastSnapshot.RemainingRequests != 0 || t.lastSnapshot.ResetRequests <= 0 {
+		return false, 0, ""
+	}
+	expires := t.snapshotUpdated.Add(t.lastSnapshot.ResetRequests)
+	return timedBlock(now, expires, "requests per day limit")
+}
+
+func (t *Tracker) tokenBlock(now time.Time, estTokens int) (bool, time.Duration, string) {
+	if t.lastSnapshot.RemainingTokens < 0 || estTokens <= t.lastSnapshot.RemainingTokens {
+		return false, 0, ""
+	}
+	expires := t.snapshotUpdated.Add(t.lastSnapshot.ResetTokens)
+	return timedBlock(now, expires, "tokens per minute limit")
+}
+
+func timedBlock(now, expires time.Time, reason string) (bool, time.Duration, string) {
+	if expires.IsZero() || !now.Before(expires) {
+		return false, 0, ""
+	}
+	return true, expires.Sub(now), reason
 }
 
 func (t *Tracker) trim(now time.Time) {

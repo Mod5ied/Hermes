@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,9 +10,9 @@ import (
 
 func TestParseAnswer(t *testing.T) {
 	cases := []struct {
-		input     string
-		wantType  AnswerType
-		wantText  string
+		input    string
+		wantType AnswerType
+		wantText string
 	}{
 		{"Select B", Select, "Select B"},
 		{"Select A and D", Select, "Select A and D"},
@@ -25,6 +26,42 @@ func TestParseAnswer(t *testing.T) {
 		assert.Equal(t, c.wantType, ans.Type, "input: %q", c.input)
 		assert.Equal(t, c.wantText, ans.Text)
 	}
+}
+
+func TestOpenAIBuildBodyUsesAccuracySettingsForDocumentMode(t *testing.T) {
+	client := &openAIClient{model: "gpt-oss-120b"}
+	body, err := client.buildBody([]Message{{Role: "user", Text: "review", Mode: DocumentMode}})
+	assert.NoError(t, err)
+
+	var request map[string]interface{}
+	assert.NoError(t, json.Unmarshal(body, &request))
+	assert.Equal(t, 0.2, request["temperature"])
+	assert.Equal(t, float64(8192), request["max_completion_tokens"])
+	assert.Equal(t, "high", request["reasoning_effort"])
+	assert.NotContains(t, request, "top_p")
+}
+
+func TestOpenAIBuildBodyDoesNotSendUnsupportedReasoningEffort(t *testing.T) {
+	client := &openAIClient{model: "meta-llama/llama-4-scout-17b-16e-instruct"}
+	body, err := client.buildBody([]Message{{Role: "user", Text: "review", Mode: DocumentMode}})
+	assert.NoError(t, err)
+
+	var request map[string]interface{}
+	assert.NoError(t, json.Unmarshal(body, &request))
+	assert.NotContains(t, request, "reasoning_effort")
+}
+
+func TestProxyBuildBodyUsesAccuracySettingsForDocumentMode(t *testing.T) {
+	client := &proxyClient{model: "gpt-oss-120b"}
+	body, err := client.buildBody([]Message{{Role: "user", Text: "review", Mode: DocumentMode}})
+	assert.NoError(t, err)
+
+	var request map[string]interface{}
+	assert.NoError(t, json.Unmarshal(body, &request))
+	assert.Equal(t, 0.2, request["temperature"])
+	assert.Equal(t, float64(8192), request["max_completion_tokens"])
+	assert.Equal(t, "high", request["reasoning_effort"])
+	assert.NotContains(t, request, "top_p")
 }
 
 func TestSystemPromptNoProfile(t *testing.T) {
@@ -48,9 +85,11 @@ func TestOpenAIStreamIgnoresReasoningDeltas(t *testing.T) {
 
 	client := &openAIClient{apiKey: "test", base: "http://unused", model: "gpt-oss-120b"}
 	var got string
-	err := client.stream(strings.NewReader(body), func(delta string) { got += delta })
+	var full strings.Builder
+	err := client.stream(strings.NewReader(body), &full, func(delta string) { got += delta })
 	assert.NoError(t, err)
 	assert.Equal(t, "Hello!", got)
+	assert.Equal(t, "Hello!", full.String())
 	assert.NotContains(t, got, "reasoning")
 }
 

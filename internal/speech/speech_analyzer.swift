@@ -70,9 +70,7 @@ public func hermes_speech_analyzer_locale_supported(_ localeCStr: UnsafePointer<
     let sem = DispatchSemaphore(value: 0)
     var supported = false
     Task {
-        if await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil {
-            supported = true
-        }
+        supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil
         sem.signal()
     }
     sem.wait()
@@ -176,42 +174,77 @@ public func hermes_speech_analyzer_feed_buffer(
     _ channels: UInt32
 ) -> Int32 {
     guard #available(macOS 26.0, *) else { return -1 }
-    guard let data = data, frameCount > 0 else { return 0 }
-    guard let targetFormat = gTargetFormat else { return -2 }
-
-    let frames = AVAudioFrameCount(frameCount)
-    guard let srcFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                        sampleRate: sampleRate,
-                                        channels: AVAudioChannelCount(channels),
-                                        interleaved: false),
-          let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frames) else { return -3 }
-    srcBuffer.frameLength = frames
-    memcpy(srcBuffer.floatChannelData![0], data, Int(frameCount) * MemoryLayout<Float>.size)
-
-    if srcFormat == targetFormat {
-        gInputContinuation?.yield(AnalyzerInput(buffer: srcBuffer))
+    let preparation = prepareFeed(data, frameCount, sampleRate, channels)
+    if let result = preparation.result { return result }
+    let source = preparation.source!
+    let targetFormat = preparation.target!
+    if source.format == targetFormat {
+        gInputContinuation?.yield(AnalyzerInput(buffer: source.buffer))
         return 0
     }
-    guard let converter = converterTo(targetFormat, from: srcFormat) else { return -5 }
+    return convertAndYield(source, to: targetFormat, frameCount: frameCount)
+}
 
-    let ratio = targetFormat.sampleRate / srcFormat.sampleRate
-    let outCap = AVAudioFrameCount(Double(frameCount) * ratio) + 16
-    guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap) else { return -6 }
+private typealias SourceAudio = (format: AVAudioFormat, buffer: AVAudioPCMBuffer)
 
+private struct FeedPreparation {
+    let source: SourceAudio?
+    let target: AVAudioFormat?
+    let result: Int32?
+}
+
+private func hasAudioData(_ data: UnsafePointer<Float>?, _ frameCount: Int32) -> Bool {
+    return data != nil && frameCount > 0
+}
+
+private func prepareFeed(_ data: UnsafePointer<Float>?, _ frameCount: Int32, _ sampleRate: Double, _ channels: UInt32) -> FeedPreparation {
+    if !hasAudioData(data, frameCount) { return FeedPreparation(source: nil, target: nil, result: 0) }
+    guard let target = gTargetFormat else { return FeedPreparation(source: nil, target: nil, result: -2) }
+    guard let source = sourceAudioBuffer(data!, frameCount, sampleRate, channels) else {
+        return FeedPreparation(source: nil, target: nil, result: -3)
+    }
+    return FeedPreparation(source: source, target: target, result: nil)
+}
+
+private func sourceAudioBuffer(_ data: UnsafePointer<Float>, _ frameCount: Int32, _ sampleRate: Double, _ channels: UInt32) -> SourceAudio? {
+    let frames = AVAudioFrameCount(frameCount)
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                     sampleRate: sampleRate,
+                                     channels: AVAudioChannelCount(channels),
+                                     interleaved: false) else { return nil }
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+    buffer.frameLength = frames
+    memcpy(buffer.floatChannelData![0], data, Int(frameCount) * MemoryLayout<Float>.size)
+    return (format, buffer)
+}
+
+private func converterInput(_ source: AVAudioPCMBuffer) -> AVAudioConverterInputBlock {
     var provided = false
-    var convErr: NSError?
-    _ = converter.convert(to: dstBuffer, error: &convErr) { _, outStatus in
+    return { _, outStatus in
         if provided { outStatus.pointee = .noDataNow; return nil }
         provided = true
         outStatus.pointee = .haveData
-        return srcBuffer
+        return source
     }
-    if let err = convErr {
+}
+
+private func convertAndYield(_ source: SourceAudio, to targetFormat: AVAudioFormat, frameCount: Int32) -> Int32 {
+    guard let converter = converterTo(targetFormat, from: source.format) else { return -5 }
+    let ratio = targetFormat.sampleRate / source.format.sampleRate
+    let outCap = AVAudioFrameCount(Double(frameCount) * ratio) + 16
+    guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap) else { return -6 }
+    var convErr: NSError?
+    _ = converter.convert(to: dstBuffer, error: &convErr, withInputFrom: converterInput(source.buffer))
+    return finishConversion(dstBuffer, error: convErr)
+}
+
+private func finishConversion(_ buffer: AVAudioPCMBuffer, error: NSError?) -> Int32 {
+    if let err = error {
         logEngine("converter error: \(err.localizedDescription)")
         return -7
     }
-    if dstBuffer.frameLength == 0 { return 0 }
-    gInputContinuation?.yield(AnalyzerInput(buffer: dstBuffer))
+    if buffer.frameLength == 0 { return 0 }
+    gInputContinuation?.yield(AnalyzerInput(buffer: buffer))
     return 0
 }
 

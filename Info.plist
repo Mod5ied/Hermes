@@ -20,5 +20,7 @@
     <string>Hermes transcribes the call app's audio output on-device so spoken questions can be answered.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Hermes does not use the microphone. This description is included for compatibility with speech APIs.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Hermes captures the active window so it can answer questions visible on screen.</string>
 </dict>
 </plist>

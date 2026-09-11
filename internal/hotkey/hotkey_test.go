@@ -1,3 +1,5 @@
+//go:build !windows
+
 package hotkey
 
 import (
@@ -32,6 +34,19 @@ func TestParseComboArrows(t *testing.T) {
 		"cmd+right": hotkey.KeyRight,
 		"cmd+up":    hotkey.KeyUp,
 		"cmd+down":  hotkey.KeyDown,
+	}
+	for combo, want := range cases {
+		mods, key, err := parseCombo(combo)
+		assert.NoError(t, err, combo)
+		assert.Equal(t, want, key, combo)
+		assert.Contains(t, mods, hotkey.ModCmd, combo)
+	}
+}
+
+func TestParseDiscussionShortcuts(t *testing.T) {
+	cases := map[string]hotkey.Key{
+		Discussion:   hotkey.KeyD,
+		AskQuestions: hotkey.KeyA,
 	}
 	for combo, want := range cases {
 		mods, key, err := parseCombo(combo)

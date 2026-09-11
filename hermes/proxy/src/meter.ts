@@ -11,31 +11,19 @@ export function meterStream(providerBody: ReadableStream<Uint8Array>, onDone: De
   const t = new TransformStream<Uint8Array, Uint8Array>({
     async transform(chunk, controller) {
       buf += dec.decode(chunk, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf("\n\n")) >= 0) {
+      while (buf.includes("\n\n")) {
+        const idx = buf.indexOf("\n\n");
         const evt = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
-        const dataLine = evt.split("\n").find(l => l.startsWith("data:"));
-        const data = dataLine ? dataLine.slice(5).trim() : "";
-
+        const data = eventData(evt);
         if (data === "[DONE]") {
-          const r = await onDone(usage, contentChars);
-          const pct = r.budgetTotalMicros > 0
-            ? Math.max(0, Math.round((100 * r.balanceMicros) / r.budgetTotalMicros)) : 0;
-          const inj = JSON.stringify({ hermes: { balance_micros: r.balanceMicros, balance_pct: pct, cost_micros: r.costMicros } });
-          controller.enqueue(enc.encode(`data: ${inj}\n\n`));
-          controller.enqueue(enc.encode(`data: [DONE]\n\n`));
-          continue;
+          await emitDone(controller, enc, onDone, usage, contentChars);
+        } else {
+          const parsed = parseUsageEvent(data);
+          usage = parsed.usage ?? usage;
+          contentChars += parsed.contentChars;
+          controller.enqueue(enc.encode(evt + "\n\n"));
         }
-        if (data) {
-          try {
-            const j = JSON.parse(data);
-            if (j.usage) usage = j.usage;
-            const piece = j.choices?.[0]?.delta?.content;
-            if (typeof piece === "string") contentChars += piece.length;
-          } catch { /* keep-alive or non-json line, ignore */ }
-        }
-        controller.enqueue(enc.encode(evt + "\n\n"));
       }
     },
     flush(controller) {
@@ -44,4 +32,33 @@ export function meterStream(providerBody: ReadableStream<Uint8Array>, onDone: De
   });
 
   return providerBody.pipeThrough(t);
+}
+
+function eventData(event: string): string {
+  const line = event.split("\n").find(candidate => candidate.startsWith("data:"));
+  return line ? line.slice(5).trim() : "";
+}
+
+function parseUsageEvent(data: string): { usage: any; contentChars: number } {
+  if (!data) return { usage: null, contentChars: 0 };
+  try {
+    const parsed = JSON.parse(data);
+    return { usage: parsed.usage ?? null, contentChars: contentLength(parsed) };
+  } catch {
+    return { usage: null, contentChars: 0 };
+  }
+}
+
+function contentLength(parsed: any): number {
+  const piece = parsed.choices?.[0]?.delta?.content;
+  return typeof piece === "string" ? piece.length : 0;
+}
+
+async function emitDone(controller: TransformStreamDefaultController<Uint8Array>, enc: TextEncoder, onDone: DebitFn, usage: any, chars: number): Promise<void> {
+  const result = await onDone(usage, chars);
+  const pct = result.budgetTotalMicros > 0
+    ? Math.max(0, Math.round((100 * result.balanceMicros) / result.budgetTotalMicros)) : 0;
+  const injected = JSON.stringify({ hermes: { balance_micros: result.balanceMicros, balance_pct: pct, cost_micros: result.costMicros } });
+  controller.enqueue(enc.encode(`data: ${injected}\n\n`));
+  controller.enqueue(enc.encode("data: [DONE]\n\n"));
 }

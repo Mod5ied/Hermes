@@ -1,0 +1,77 @@
+{
+  "manifest_version": 3,
+  "name": "Hermes",
+  "version": "0.1.0",
+  "description": "A minimal, high-performance interview and meeting assistant.",
+  "cross_origin_embedder_policy": { "value": "require-corp" },
+  "cross_origin_opener_policy": { "value": "same-origin" },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "nativeMessaging"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://api.groq.com/*",
+    "https://api.cerebras.ai/*"
+  ],
+  "background": {
+    "scripts": ["src/background-firefox.js"],
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Toggle Hermes"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/frame-agent.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content-bundle.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {"default": "Ctrl+Shift+H", "mac": "Command+Shift+H"}
+    },
+    "capture-region": {
+      "suggested_key": {"default": "Alt+Shift+H", "mac": "MacCtrl+Shift+H"},
+      "description": "Capture a region"
+    },
+    "toggle-listen": {
+      "suggested_key": {"default": "Alt+Shift+L", "mac": "MacCtrl+Shift+L"},
+      "description": "Start or stop call transcription"
+    },
+    "type-answer": {
+      "suggested_key": {"default": "Alt+Shift+T", "mac": "MacCtrl+Shift+T"},
+      "description": "Type the last answer"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hermes@project-hermes.dev",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["authenticationInfo", "personalCommunications", "personallyIdentifyingInfo", "websiteContent"]
+      }
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/audio/audio-worklet.js",
+        "src/audio/audio-worker.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "32": "icons/icon-32.png",
+    "128": "icons/icon-128.png"
+  }
+}

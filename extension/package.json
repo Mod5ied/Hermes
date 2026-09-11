@@ -1,0 +1,16 @@
+{
+  "name": "hermes-webextension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs all",
+    "build:chrome": "node scripts/build.mjs chrome",
+    "build:firefox": "node scripts/build.mjs firefox",
+    "build:wasm": "cargo build --manifest-path rust/audio-dsp/Cargo.toml --target wasm32-unknown-unknown --release",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
